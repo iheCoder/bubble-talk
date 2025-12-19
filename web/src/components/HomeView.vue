@@ -15,6 +15,7 @@ const showFilters = ref(false)
 const bubbleSeed = [
   {
     id: 1,
+    entry_id: 'econ_weekend_overtime',
     title: '周末加班值不值？',
     subtitle: '机会成本藏在时间里',
     tag: '经济',
@@ -24,6 +25,7 @@ const bubbleSeed = [
   },
   {
     id: 2,
+    entry_id: 'econ_weekend_overtime',
     title: '为什么你学了又忘？',
     subtitle: '遗忘曲线与间隔重复',
     tag: '学习',
@@ -33,6 +35,7 @@ const bubbleSeed = [
   },
   {
     id: 3,
+    entry_id: 'econ_weekend_overtime',
     title: '价格涨了你反而买更多？',
     subtitle: '韦伯伦效应的暗号',
     tag: '行为',
@@ -42,6 +45,7 @@ const bubbleSeed = [
   },
   {
     id: 4,
+    entry_id: 'econ_weekend_overtime',
     title: '如何从容面对考试焦虑？',
     subtitle: '认知重评的微光',
     tag: '心理',
@@ -51,6 +55,7 @@ const bubbleSeed = [
   },
   {
     id: 5,
+    entry_id: 'econ_weekend_overtime',
     title: '为什么计划总被打乱？',
     subtitle: '执行意图的设计',
     tag: '效率',
@@ -60,6 +65,7 @@ const bubbleSeed = [
   },
   {
     id: 6,
+    entry_id: 'econ_weekend_overtime',
     title: '自控力耗尽是真的吗？',
     subtitle: '意志的补给线',
     tag: '心理',
@@ -69,6 +75,7 @@ const bubbleSeed = [
   },
   {
     id: 7,
+    entry_id: 'econ_weekend_overtime',
     title: '为什么会冲动消费？',
     subtitle: '即时奖励的幻象',
     tag: '经济',
@@ -78,6 +85,7 @@ const bubbleSeed = [
   },
   {
     id: 8,
+    entry_id: 'econ_weekend_overtime',
     title: '你真的理解因果吗？',
     subtitle: '相关不等于因果',
     tag: '方法',
@@ -87,6 +95,7 @@ const bubbleSeed = [
   },
   {
     id: 9,
+    entry_id: 'econ_weekend_overtime',
     title: '工作中如何提出好问题？',
     subtitle: '提问框架的力量',
     tag: '沟通',
@@ -96,6 +105,7 @@ const bubbleSeed = [
   },
   {
     id: 10,
+    entry_id: 'econ_weekend_overtime',
     title: '先做还是先学？',
     subtitle: '实践与理论的对齐',
     tag: '学习',

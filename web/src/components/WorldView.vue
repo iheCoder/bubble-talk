@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { connectRealtime } from '../api/realtime'
 
 const props = defineProps({
   bubble: {
@@ -9,10 +10,14 @@ const props = defineProps({
       tag: '经济',
       subtitle: '机会成本藏在时间里'
     })
-  }
+  },
+  sessionId: {
+    type: String,
+    default: null,
+  },
 })
 
-const emit = defineEmits(['exit-world'])
+const emit = defineEmits(['exit-world', 'session-created'])
 
 // Role Configuration based on tags
 const roleConfig = {
@@ -116,7 +121,9 @@ const currentSpeech = ref({
   expert: null, // Generic key for the second role
   user: null
 })
-const isMicActive = ref(false)
+const isMicActive = ref(true) // Default to true for RTC
+const isMuted = ref(false)
+const rtcClient = ref(null)
 
 const intents = [
   '我有疑问',
@@ -135,6 +142,61 @@ const roleMap = computed(() => {
 })
 const toolVisible = computed(() => toolState.value !== 'hidden')
 const toolResolved = computed(() => toolState.value === 'resolved')
+
+const ensureSession = async () => {
+  // 第一阶段：把 UI 里的 bubble 映射到后端 entry_id（固定配置即可）。
+  // 后续：前端改为直接展示后端 /api/bubbles 的结果。
+  if (props.sessionId) return props.sessionId
+  const entryId = props.bubble?.entry_id || 'econ_weekend_overtime'
+  const resp = await fetch(`/api/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entry_id: entryId }),
+  })
+  if (!resp.ok) throw new Error(`create session failed: ${resp.status}`)
+  const data = await resp.json()
+  emit('session-created', data.session_id)
+  return data.session_id
+}
+
+const connect = async () => {
+  try {
+    errorText.value = ''
+    const sessionId = await ensureSession()
+
+    realtime = await connectRealtime({
+      backendBaseUrl: '',
+      sessionId,
+      onRemoteStream: (stream) => {
+        if (!remoteAudioEl.value) return
+        remoteAudioEl.value.srcObject = stream
+        remoteAudioEl.value.play().catch(() => {})
+      },
+      onEvent: (evt) => {
+        // 这里只做最小可见性：把关键事件展示出来，便于调试。
+        transcript.value.push(evt)
+      },
+    })
+    isRealtimeConnected.value = true
+    isMicActive.value = true
+  } catch (err) {
+    errorText.value = err?.message || String(err)
+    disconnect()
+  }
+}
+
+const disconnect = () => {
+  isRealtimeConnected.value = false
+  isMicActive.value = false
+  try {
+    realtime?.close()
+  } catch {}
+  realtime = null
+  if (remoteAudioEl.value) {
+    try { remoteAudioEl.value.pause() } catch {}
+    remoteAudioEl.value.srcObject = null
+  }
+}
 
 const pushMessage = (role, text) => {
   // Map specific expert ID to generic 'expert' key for UI positioning if needed
@@ -218,6 +280,17 @@ const handleSend = () => {
   input.value = ''
 }
 
+const toggleMute = () => {
+  isMuted.value = !isMuted.value
+  if (rtcClient.value) {
+    rtcClient.value.setMuted(isMuted.value)
+  }
+}
+
+const handleDisconnect = () => {
+  emit('exit-world')
+}
+
 const handleIntent = (intent) => {
   pushMessage('user', intent)
 }
@@ -257,11 +330,26 @@ watch(() => props.bubble, () => {
 
 onBeforeUnmount(() => {
   timers.forEach((id) => window.clearTimeout(id))
+  disconnect()
 })
 </script>
 
 <template>
+  <!-- 远端音频（OpenAI Realtime TTS 下行） -->
+  <audio ref="remoteAudioEl" autoplay playsinline></audio>
+
   <div class="world-view">
+    <div class="realtime-bar">
+      <button class="realtime-button" @click="isRealtimeConnected ? disconnect() : connect()">
+        {{ isRealtimeConnected ? '断开语音' : '连接语音（gpt-realtime / WebRTC）' }}
+      </button>
+      <div v-if="errorText" class="realtime-error">{{ errorText }}</div>
+    </div>
+
+    <div v-if="isRealtimeConnected" class="realtime-debug">
+      <div class="realtime-debug__title">Realtime 事件（调试用）</div>
+      <pre class="realtime-debug__body">{{ JSON.stringify(transcript.slice(-6), null, 2) }}</pre>
+    </div>
     <!-- Header Layer -->
     <header class="world-header glass-panel">
       <div class="world-header__left">
@@ -351,31 +439,47 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- User Position (Bottom Center) -->
-      <div class="seat seat--user" :class="{ 'is-speaking': currentSpeech.user || isMicActive }">
+      <div class="seat seat--user" :class="{ 'is-speaking': currentSpeech.user || (!isMuted && isMicActive) }">
         <transition name="fade-slide">
           <div v-if="currentSpeech.user" class="speech-bubble glass-panel">
             {{ currentSpeech.user.text }}
           </div>
         </transition>
 
-        <div class="mic-control-area">
-           <button
-            class="mic-button"
-            :class="{ 'is-active': isMicActive }"
-            @mousedown="isMicActive = true"
-            @mouseup="toggleMic"
-            @touchstart.prevent="isMicActive = true"
-            @touchend.prevent="toggleMic"
-           >
-            <div class="mic-waves" v-if="isMicActive"></div>
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-              <line x1="12" y1="19" x2="12" y2="23"/>
-              <line x1="8" y1="23" x2="16" y2="23"/>
-            </svg>
-           </button>
-           <div class="user-label">按住说话</div>
+        <div class="user-avatar-area">
+           <div class="user-avatar-wrapper">
+             <div class="user-avatar-ring" :class="{ 'is-active': !isMuted && isMicActive }"></div>
+             <div class="user-avatar">
+               <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix" alt="User Avatar" />
+             </div>
+             <div class="user-status-badge" :class="{ 'is-muted': isMuted }">
+               {{ isMuted ? '已静音' : '聆听中' }}
+             </div>
+           </div>
+
+           <div class="user-controls">
+             <button class="control-btn" :class="{ 'is-active': isMuted }" @click="toggleMute" title="静音/取消静音">
+               <svg v-if="!isMuted" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                 <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                 <line x1="12" y1="19" x2="12" y2="23"/>
+                 <line x1="8" y1="23" x2="16" y2="23"/>
+               </svg>
+               <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                 <line x1="1" y1="1" x2="23" y2="23"/>
+                 <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/>
+                 <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/>
+                 <line x1="12" y1="19" x2="12" y2="23"/>
+                 <line x1="8" y1="23" x2="16" y2="23"/>
+               </svg>
+             </button>
+             <button class="control-btn btn-hangup" @click="handleDisconnect" title="结束通话">
+               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                 <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/>
+                 <line x1="23" y1="1" x2="1" y2="23"/>
+               </svg>
+             </button>
+           </div>
         </div>
       </div>
 
@@ -727,53 +831,120 @@ onBeforeUnmount(() => {
 }
 
 /* Mic Control */
-.mic-control-area {
+.user-avatar-area {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
   margin-top: 20px;
+  position: relative;
 }
 
-.mic-button {
+.user-avatar-wrapper {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.user-avatar {
   width: 80px;
   height: 80px;
   border-radius: 50%;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  background: #000;
+  z-index: 2;
+  position: relative;
+}
+
+.user-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.user-avatar-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid var(--accent-color, #7cffdb);
+  opacity: 0;
+  transform: scale(0.8);
+  transition: all 0.2s;
+}
+
+.user-avatar-ring.is-active {
+  opacity: 0.6;
+  animation: pulse-ring 1.5s infinite;
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.9); opacity: 0.8; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+.user-status-badge {
+  position: absolute;
+  bottom: -6px;
+  background: rgba(124, 255, 219, 0.2);
+  border: 1px solid rgba(124, 255, 219, 0.4);
+  color: #7cffdb;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  backdrop-filter: blur(4px);
+  z-index: 3;
+  transition: all 0.3s;
+}
+
+.user-status-badge.is-muted {
+  background: rgba(255, 100, 100, 0.2);
+  border-color: rgba(255, 100, 100, 0.4);
+  color: #ff8888;
+}
+
+.user-controls {
+  display: flex;
+  gap: 16px;
+}
+
+.control-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
   background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   transition: all 0.2s;
-  position: relative;
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(4px);
 }
 
-.mic-button:active, .mic-button.is-active {
-  transform: scale(0.95);
-  background: rgba(124, 255, 219, 0.2);
-  border-color: rgba(124, 255, 219, 0.5);
-  color: #7cffdb;
+.control-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: translateY(-2px);
 }
 
-.mic-waves {
-  position: absolute;
-  inset: -20px;
-  border-radius: 50%;
-  border: 2px solid rgba(124, 255, 219, 0.3);
-  animation: pulse-mic 1.5s infinite;
+.control-btn.is-active {
+  background: rgba(255, 100, 100, 0.2);
+  color: #ff8888;
+  border-color: rgba(255, 100, 100, 0.4);
 }
 
-@keyframes pulse-mic {
-  0% { transform: scale(0.8); opacity: 1; }
-  100% { transform: scale(1.5); opacity: 0; }
+.control-btn.btn-hangup {
+  background: rgba(255, 50, 50, 0.8);
+  color: white;
+  border: none;
 }
 
-.user-label {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.5);
+.control-btn.btn-hangup:hover {
+  background: rgba(255, 80, 80, 1);
 }
 
 /* Footer */

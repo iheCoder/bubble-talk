@@ -23,8 +23,11 @@ const handleClick = () => {
   if (!rect) return
   emit('select', {
     id: props.bubble.id,
+    entry_id: props.bubble.entry_id,
     title: props.bubble.title,
     subtitle: props.bubble.subtitle,
+    tag: props.bubble.tag,
+    detail: props.bubble.detail,
     glow: props.bubble.glow,
     centerX: rect.left + rect.width / 2,
     centerY: rect.top + rect.height / 2,
@@ -231,4 +234,3 @@ const handleClick = () => {
   border-radius: 4px;
 }
 </style>
-

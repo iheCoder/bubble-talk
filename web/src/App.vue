@@ -7,6 +7,7 @@ const stage = ref('home')
 const portal = ref(null)
 const portalActive = ref(false)
 const selectedBubble = ref(null)
+const sessionId = ref(null)
 
 const handleEnter = async (payload) => {
   if (portalActive.value) return
@@ -27,6 +28,7 @@ const handleEnter = async (payload) => {
 const handleExit = () => {
   stage.value = 'home'
   selectedBubble.value = null
+  sessionId.value = null
 }
 </script>
 
@@ -34,7 +36,7 @@ const handleExit = () => {
   <div class="app-shell" :class="{ 'app-shell--warp': !!portalActive }">
     <Transition name="fade" mode="out-in">
       <HomeView v-if="stage === 'home'" @enter-world="handleEnter" :portal-active="!!portalActive" />
-      <WorldView v-else :bubble="selectedBubble" @exit-world="handleExit" />
+      <WorldView v-else :bubble="selectedBubble" :session-id="sessionId" @exit-world="handleExit" @session-created="sessionId = $event" />
     </Transition>
 
     <!-- Immersive Portal Transition -->
