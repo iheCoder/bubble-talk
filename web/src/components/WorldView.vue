@@ -1,18 +1,22 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+
+const props = defineProps({
+  bubble: {
+    type: Object,
+    default: () => ({
+      title: '周末加班值不值？',
+      tag: '经济',
+      subtitle: '机会成本藏在时间里'
+    })
+  }
+})
 
 const emit = defineEmits(['exit-world'])
 
-const roles = [
-  {
-    id: 'host',
-    name: '主持人',
-    tag: '引导者',
-    color: 'rgba(124, 255, 219, 0.7)',
-    accent: 'rgba(124, 255, 219, 0.35)',
-    avatar: 'H',
-  },
-  {
+// Role Configuration based on tags
+const roleConfig = {
+  '经济': {
     id: 'economist',
     name: '经济学家',
     tag: '机会成本',
@@ -20,15 +24,82 @@ const roles = [
     accent: 'rgba(140, 200, 255, 0.35)',
     avatar: 'E',
   },
-  {
-    id: 'user',
-    name: '你',
-    tag: '学习者',
-    color: 'rgba(255, 199, 140, 0.8)',
-    accent: 'rgba(255, 199, 140, 0.35)',
-    avatar: '你',
+  '心理': {
+    id: 'psychologist',
+    name: '心理咨询师',
+    tag: '认知重评',
+    color: 'rgba(255, 168, 209, 0.7)',
+    accent: 'rgba(255, 168, 209, 0.35)',
+    avatar: 'P',
   },
-]
+  '学习': {
+    id: 'coach',
+    name: '学习教练',
+    tag: '元认知',
+    color: 'rgba(124, 255, 219, 0.7)',
+    accent: 'rgba(124, 255, 219, 0.35)',
+    avatar: 'C',
+  },
+  '行为': {
+    id: 'behaviorist',
+    name: '行为学家',
+    tag: '行为设计',
+    color: 'rgba(255, 196, 110, 0.7)',
+    accent: 'rgba(255, 196, 110, 0.35)',
+    avatar: 'B',
+  },
+  '效率': {
+    id: 'pm',
+    name: '产品经理',
+    tag: '系统思维',
+    color: 'rgba(118, 245, 169, 0.7)',
+    accent: 'rgba(118, 245, 169, 0.35)',
+    avatar: 'PM',
+  },
+  '沟通': {
+    id: 'mediator',
+    name: '沟通专家',
+    tag: '非暴力沟通',
+    color: 'rgba(255, 212, 148, 0.7)',
+    accent: 'rgba(255, 212, 148, 0.35)',
+    avatar: 'M',
+  },
+  'default': {
+    id: 'expert',
+    name: '领域专家',
+    tag: '知识向导',
+    color: 'rgba(188, 214, 255, 0.7)',
+    accent: 'rgba(140, 200, 255, 0.35)',
+    avatar: 'X',
+  }
+}
+
+const getExpertRole = (tag) => {
+  return roleConfig[tag] || roleConfig['default']
+}
+
+const roles = computed(() => {
+  const expert = getExpertRole(props.bubble?.tag)
+  return [
+    {
+      id: 'host',
+      name: '主持人',
+      tag: '引导者',
+      color: 'rgba(124, 255, 219, 0.7)',
+      accent: 'rgba(124, 255, 219, 0.35)',
+      avatar: 'H',
+    },
+    expert,
+    {
+      id: 'user',
+      name: '你',
+      tag: '学习者',
+      color: 'rgba(255, 199, 140, 0.8)',
+      accent: 'rgba(255, 199, 140, 0.35)',
+      avatar: '你',
+    },
+  ]
+})
 
 const messages = ref([])
 const activeRole = ref('host')
@@ -39,6 +110,14 @@ const toolFragment = ref(false)
 const input = ref('')
 const timers = []
 
+// New state for Round Table mode
+const currentSpeech = ref({
+  host: null,
+  expert: null, // Generic key for the second role
+  user: null
+})
+const isMicActive = ref(false)
+
 const intents = [
   '我有疑问',
   '展开一点',
@@ -47,9 +126,9 @@ const intents = [
   '我懂了，结束',
 ]
 
-const currentRole = computed(() => roles.find((role) => role.id === activeRole.value))
+const expertRole = computed(() => getExpertRole(props.bubble?.tag))
 const roleMap = computed(() => {
-  return roles.reduce((acc, role) => {
+  return roles.value.reduce((acc, role) => {
     acc[role.id] = role
     return acc
   }, {})
@@ -58,11 +137,28 @@ const toolVisible = computed(() => toolState.value !== 'hidden')
 const toolResolved = computed(() => toolState.value === 'resolved')
 
 const pushMessage = (role, text) => {
-  messages.value.push({
-    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    role,
-    text,
-  })
+  // Map specific expert ID to generic 'expert' key for UI positioning if needed
+  // But better to use the role ID directly if we make the template dynamic
+
+  // Clear previous speech for this role
+  currentSpeech.value[role] = null
+
+  // Set new speech with a small delay to trigger animation if needed
+  setTimeout(() => {
+    currentSpeech.value[role] = {
+      text,
+      timestamp: Date.now()
+    }
+  }, 10)
+
+  // Auto-clear after some time (simulating speech duration)
+  // In a real app, this would be tied to audio playback end
+  const duration = Math.max(2000, text.length * 100)
+  schedule(() => {
+    if (currentSpeech.value[role]?.text === text) {
+      currentSpeech.value[role] = null
+    }
+  }, duration + 1000)
 }
 
 const schedule = (fn, delay) => {
@@ -72,21 +168,26 @@ const schedule = (fn, delay) => {
 }
 
 const playSequence = () => {
+  const expert = getExpertRole(props.bubble?.tag)
+  const expertId = expert.id
+
+  // Dynamic script generation based on bubble content
+  // In a real app, this would come from an API
   const steps = [
     {
       role: 'host',
-      text: '欢迎进入泡泡课堂。我们先从一个生活中的选择开始。',
-      pause: 900,
+      text: `欢迎来到泡泡课堂。今天我们聊聊“${props.bubble?.title || '这个话题'}”。`,
+      pause: 3000,
     },
     {
-      role: 'economist',
-      text: '当你加班时，你放弃的是另一段时间的潜在价值。',
-      pause: 900,
+      role: expertId,
+      text: props.bubble?.detail || '这是一个非常值得探讨的问题，因为它触及了我们认知的盲区。',
+      pause: 3000,
     },
     {
       role: 'host',
-      text: '我们来做一个小检验：以下哪一个最像机会成本？',
-      pause: 600,
+      text: '我们先来做一个直觉检验，看看大家通常是怎么想的。',
+      pause: 2000,
       after: () => {
         toolState.value = 'show'
       },
@@ -98,6 +199,8 @@ const playSequence = () => {
     const step = steps[index]
     activeRole.value = step.role
     isThinking.value = true
+
+    // Simulate "thinking" before speaking
     schedule(() => {
       isThinking.value = false
       pushMessage(step.role, step.text)
@@ -109,37 +212,46 @@ const playSequence = () => {
   runStep(0)
 }
 
-const sendMessage = () => {
+const handleSend = () => {
   if (!input.value.trim()) return
   pushMessage('user', input.value.trim())
   input.value = ''
 }
 
-const sendIntent = (intent) => {
+const handleIntent = (intent) => {
   pushMessage('user', intent)
 }
 
-const selectOption = (option) => {
+const handleOptionSelect = (option) => {
   if (toolResolved.value) return
+  const expert = getExpertRole(props.bubble?.tag)
+
   selectedOption.value = option
   toolState.value = 'resolved'
   toolFragment.value = true
-  activeRole.value = 'economist'
+  activeRole.value = expert.id
   isThinking.value = true
+
   schedule(() => {
     isThinking.value = false
-    pushMessage('economist', '是的，错过的家庭晚餐是你真正放弃的价值。')
+    pushMessage(expert.id, '很有趣的选择。这反映了我们大脑的一种典型偏好。')
     schedule(() => {
-      pushMessage('host', '很棒。接下来我们把它和“沉没成本”做对比。')
-    }, 900)
+      pushMessage('host', '那么，这种偏好在其他场景下也会出现吗？')
+    }, 3000)
   }, 700)
 
   schedule(() => {
     toolState.value = 'hidden'
-  }, 2600)
+  }, 5000)
 }
 
 onMounted(() => {
+  playSequence()
+})
+
+// Watch for bubble changes to restart sequence if needed (though usually component is remounted)
+watch(() => props.bubble, () => {
+  timers.forEach((id) => window.clearTimeout(id))
   playSequence()
 })
 
@@ -163,89 +275,136 @@ onBeforeUnmount(() => {
           <span class="world-tag">经济学 · 机会成本</span>
         </div>
       </div>
-      <div class="world-header__right">
-        <div class="avatar-stack">
-          <div v-for="role in roles" :key="role.id" class="avatar-mini" :style="{ '--role-color': role.color }">
-            {{ role.avatar }}
-          </div>
-        </div>
-      </div>
     </header>
 
-    <!-- Stage Layer (Dialogue) -->
-    <main class="world-stage">
-      <div class="chat-stream">
-        <div
-          v-for="msg in messages"
-          :key="msg.id"
-          class="chat-row"
-          :class="{ 'chat-row--user': msg.role === 'user' }"
-        >
-          <div class="chat-avatar" :style="{ '--role-color': roleMap[msg.role].color }">
-            {{ roleMap[msg.role].avatar }}
-          </div>
-          <div class="chat-bubble glass-panel">
-            <div class="chat-name">{{ roleMap[msg.role].name }}</div>
-            <div class="chat-text">{{ msg.text }}</div>
-          </div>
-        </div>
+    <!-- Round Table Stage -->
+    <main class="world-stage round-table">
 
-        <!-- Thinking Indicator -->
-        <div v-if="isThinking" class="chat-row chat-row--thinking">
-          <div class="chat-avatar" :style="{ '--role-color': currentRole.color }">
-            <div class="speaking-halo"></div>
-            {{ currentRole.avatar }}
+      <!-- The Table Surface -->
+      <div class="table-surface">
+        <div class="table-glow"></div>
+        <div class="table-grid"></div>
+      </div>
+
+      <!-- Host Position (Top Left) -->
+      <div class="seat seat--host" :class="{ 'is-speaking': activeRole === 'host' && (isThinking || currentSpeech.host) }">
+        <div class="avatar-container">
+          <div class="avatar-halo"></div>
+          <div class="avatar-circle" :style="{ '--role-color': roleMap['host'].color }">
+            {{ roleMap['host'].avatar }}
           </div>
-          <div class="chat-bubble glass-panel chat-bubble--thinking">
+          <div class="role-label">{{ roleMap['host'].name }}</div>
+        </div>
+        <transition name="fade-slide" mode="out-in">
+          <div v-if="currentSpeech.host" key="speech" class="speech-bubble glass-panel">
+            {{ currentSpeech.host.text }}
+          </div>
+          <div v-else-if="activeRole === 'host' && isThinking" key="thinking" class="speech-bubble glass-panel speech-bubble--thinking">
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
           </div>
+        </transition>
+      </div>
+
+      <!-- Expert Position (Top Right) -->
+      <div class="seat seat--economist" :class="{ 'is-speaking': activeRole === expertRole.id && (isThinking || currentSpeech[expertRole.id]) }">
+        <div class="avatar-container">
+          <div class="avatar-halo"></div>
+          <div class="avatar-circle" :style="{ '--role-color': expertRole.color }">
+            {{ expertRole.avatar }}
+          </div>
+          <div class="role-label">{{ expertRole.name }}</div>
+        </div>
+        <transition name="fade-slide" mode="out-in">
+          <div v-if="currentSpeech[expertRole.id]" key="speech" class="speech-bubble glass-panel">
+            {{ currentSpeech[expertRole.id].text }}
+          </div>
+          <div v-else-if="activeRole === expertRole.id && isThinking" key="thinking" class="speech-bubble glass-panel speech-bubble--thinking">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          </div>
+        </transition>
+      </div>
+
+      <!-- Center Stage (Content Board) -->
+      <div class="center-stage">
+        <transition name="scale-fade">
+          <div v-if="toolVisible" class="content-board glass-panel holographic" :class="{ 'is-resolved': toolResolved }">
+            <div class="tool-header">
+              <span class="tool-icon">⚡️</span>
+              <span class="tool-title">快速检验</span>
+            </div>
+            <div class="quiz-content">
+              <div class="quiz-question">以下哪一个最像机会成本？</div>
+              <div class="quiz-options">
+                <button
+                  v-for="(opt, idx) in ['看电影花的50元', '看电影花掉的2小时', '看电影时买的爆米花']"
+                  :key="idx"
+                  class="quiz-option"
+                  :class="{ 'selected': selectedOption === idx }"
+                  @click="handleOptionSelect(idx)"
+                >
+                  {{ opt }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </transition>
+      </div>
+
+      <!-- User Position (Bottom Center) -->
+      <div class="seat seat--user" :class="{ 'is-speaking': currentSpeech.user || isMicActive }">
+        <transition name="fade-slide">
+          <div v-if="currentSpeech.user" class="speech-bubble glass-panel">
+            {{ currentSpeech.user.text }}
+          </div>
+        </transition>
+
+        <div class="mic-control-area">
+           <button
+            class="mic-button"
+            :class="{ 'is-active': isMicActive }"
+            @mousedown="isMicActive = true"
+            @mouseup="toggleMic"
+            @touchstart.prevent="isMicActive = true"
+            @touchend.prevent="toggleMic"
+           >
+            <div class="mic-waves" v-if="isMicActive"></div>
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+           </button>
+           <div class="user-label">按住说话</div>
         </div>
       </div>
+
     </main>
 
-    <!-- Tool Tray Layer -->
-    <div class="tool-tray" :class="{ 'tool-tray--visible': toolVisible, 'tool-tray--resolved': toolResolved }">
-      <div class="tool-card glass-panel">
-        <div class="tool-header">
-          <span class="tool-icon">⚡️</span>
-          <span class="tool-title">快速检验</span>
-        </div>
-        <div class="quiz-content">
-          <div class="quiz-question">以下哪一个最像机会成本？</div>
-          <div class="quiz-options">
-            <button
-              v-for="(opt, idx) in ['看电影花的50元', '看电影花掉的2小时', '看电影时买的爆米花']"
-              :key="idx"
-              class="quiz-option"
-              :class="{ 'selected': selectedOption === idx }"
-              @click="handleOptionSelect(idx)"
-            >
-              {{ opt }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- Footer Controls (Intents only) -->
+    <footer class="world-footer">
+      <!-- Removed Intent Bar for immersion -->
 
-    <!-- Control Layer -->
-    <footer class="world-footer glass-panel">
-      <div class="intent-bar">
-        <button v-for="intent in intents" :key="intent" class="intent-chip" @click="handleIntent(intent)">
-          {{ intent }}
+      <!-- Mic Control is now part of the stage, but we keep the footer for the hidden input toggle -->
+      <div class="footer-controls">
+        <button class="btn-keyboard glass-panel" @click="input = ' '">
+           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+             <rect x="2" y="4" width="20" height="16" rx="2"/>
+             <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M6 16h.01M10 16h.01M14 16h.01M18 16h.01"/>
+           </svg>
         </button>
       </div>
-      <div class="input-area">
-        <input
+
+      <!-- Hidden input for fallback -->
+      <div v-if="input" class="input-overlay glass-panel">
+         <input
           v-model="input"
           type="text"
           placeholder="输入你的想法..."
           @keydown.enter="handleSend"
+          autoFocus
         />
-        <button class="btn-send" @click="handleSend">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
-          </svg>
-        </button>
+        <button class="btn-close-input" @click="input = ''">✕</button>
       </div>
     </footer>
   </div>
@@ -256,7 +415,7 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-rows: auto 1fr auto;
   height: 100vh;
-  background: radial-gradient(circle at 50% 100%, #1a2a4a 0%, #05070a 100%);
+  background: radial-gradient(circle at 50% 50%, #1a2a4a 0%, #05070a 100%);
   position: relative;
   overflow: hidden;
 }
@@ -268,7 +427,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: center;
   z-index: 10;
-  border-bottom: 1px solid var(--glass-border);
+  border-bottom: none; /* Remove border for cleaner look */
 }
 
 .world-header__left {
@@ -282,6 +441,7 @@ onBeforeUnmount(() => {
   font-weight: 600;
   margin: 0;
   line-height: 1.2;
+  color: rgba(255, 255, 255, 0.9);
 }
 
 .world-tag {
@@ -292,126 +452,373 @@ onBeforeUnmount(() => {
 }
 
 .btn-icon {
-  background: none;
+  background: rgba(255, 255, 255, 0.1);
   border: none;
   color: var(--text-primary);
   cursor: pointer;
   padding: 8px;
   border-radius: 50%;
   transition: background 0.2s;
-}
-
-.btn-icon:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.avatar-mini {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  border: 1px solid var(--role-color);
-  color: var(--role-color);
-  margin-left: -8px;
   backdrop-filter: blur(4px);
 }
 
-.avatar-stack {
+/* Round Table Stage */
+.round-table {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  perspective: 1000px;
   display: flex;
-  padding-left: 8px;
+  justify-content: center;
+  align-items: center;
 }
 
-/* Stage */
-.world-stage {
-  overflow-y: auto;
-  padding: 24px;
+.table-surface {
+  position: absolute;
+  top: 55%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotateX(60deg);
+  width: 600px;
+  height: 600px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.03) 0%, transparent 70%);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 0 100px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.table-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(124, 255, 219, 0.05) 0%, transparent 60%);
+  animation: pulse-table 4s infinite ease-in-out;
+}
+
+.table-grid {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.1) 1px, transparent 1px);
+  background-size: 40px 40px;
+  opacity: 0.3;
+  mask-image: radial-gradient(circle, black 30%, transparent 70%);
+}
+
+@keyframes pulse-table {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.05); }
+}
+
+.seat {
+  position: absolute;
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  scroll-behavior: smooth;
+  align-items: center;
+  transition: all 0.5s ease;
+  z-index: 10;
 }
 
-.chat-row {
+.seat--host {
+  top: 10%;
+  left: 15%;
+  align-items: flex-start;
+}
+
+.seat--economist {
+  top: 10%;
+  right: 15%;
+  align-items: flex-end;
+}
+
+.seat--user {
+  bottom: 5%;
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+  width: 100%;
+}
+
+/* Avatar Styling */
+.avatar-container {
+  position: relative;
+  width: 80px;
+  height: 80px;
   display: flex;
-  gap: 16px;
-  max-width: 80%;
-  opacity: 0;
-  animation: slideIn 0.4s forwards;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 
-.chat-row--user {
-  align-self: flex-end;
-  flex-direction: row-reverse;
-}
-
-@keyframes slideIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.chat-avatar {
-  width: 40px;
-  height: 40px;
+.avatar-circle {
+  width: 64px;
+  height: 64px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid var(--role-color);
+  background: rgba(0, 0, 0, 0.4);
+  border: 2px solid var(--role-color);
   color: var(--role-color);
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 600;
-  position: relative;
-  flex-shrink: 0;
+  font-size: 24px;
+  z-index: 2;
+  box-shadow: 0 0 20px rgba(0,0,0,0.3);
+  transition: transform 0.3s ease;
 }
 
-.speaking-halo {
+.seat.is-speaking .avatar-circle {
+  transform: scale(1.1);
+  box-shadow: 0 0 30px var(--role-color);
+}
+
+.avatar-halo {
   position: absolute;
-  inset: -4px;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  height: 100%;
   border-radius: 50%;
   border: 2px solid var(--role-color);
   opacity: 0;
-  animation: pulse 2s infinite;
+  z-index: 1;
 }
 
-@keyframes pulse {
-  0% { transform: scale(1); opacity: 0.5; }
-  100% { transform: scale(1.5); opacity: 0; }
+.seat.is-speaking .avatar-halo {
+  animation: pulse-halo 2s infinite;
 }
 
-.chat-bubble {
-  padding: 16px 20px;
-  border-radius: 4px 20px 20px 20px;
+@keyframes pulse-halo {
+  0% { width: 100%; height: 100%; opacity: 0.8; }
+  100% { width: 160%; height: 160%; opacity: 0; }
+}
+
+.role-label {
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Speech Bubbles */
+.speech-bubble {
+  margin-top: 16px;
+  padding: 16px 24px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1.5;
+  max-width: 280px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
   position: relative;
 }
 
-.chat-row--user .chat-bubble {
-  border-radius: 20px 4px 20px 20px;
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.2);
+.seat--host .speech-bubble {
+  border-top-left-radius: 4px;
+  transform-origin: top left;
 }
 
-.chat-name {
-  font-size: 11px;
-  color: var(--text-secondary);
-  margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+.seat--economist .speech-bubble {
+  border-top-right-radius: 4px;
+  transform-origin: top right;
+  text-align: right;
 }
 
-.chat-text {
-  font-size: 15px;
-  line-height: 1.6;
+.seat--user .speech-bubble {
+  margin-bottom: 24px;
+  margin-top: 0;
+  border-bottom-left-radius: 4px;
+  border-bottom-right-radius: 4px;
+  background: rgba(124, 255, 219, 0.15);
+  border-color: rgba(124, 255, 219, 0.3);
 }
 
-.chat-bubble--thinking {
+.speech-bubble--thinking {
   display: flex;
   gap: 4px;
-  align-items: center;
   padding: 12px 20px;
+  width: fit-content;
+}
+
+/* Center Stage */
+.center-stage {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 20; /* Above table */
+}
+
+.content-board {
+  width: 100%;
+  background: rgba(10, 20, 40, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  padding: 24px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+  transform-style: preserve-3d;
+}
+
+.content-board.holographic {
+  background: rgba(10, 20, 40, 0.4);
+  border: 1px solid rgba(124, 255, 219, 0.3);
+  box-shadow: 0 0 30px rgba(124, 255, 219, 0.1), inset 0 0 20px rgba(124, 255, 219, 0.05);
+}
+
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  color: var(--accent-color, #7cffdb);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+
+.quiz-question {
+  font-size: 18px;
+  font-weight: 500;
+  margin-bottom: 20px;
+  line-height: 1.4;
+}
+
+.quiz-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.quiz-option {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 16px;
+  border-radius: 12px;
+  color: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 15px;
+}
+
+.quiz-option:hover {
+  background: rgba(255, 255, 255, 0.1);
+  transform: translateX(4px);
+}
+
+.quiz-option.selected {
+  background: rgba(124, 255, 219, 0.2);
+  border-color: rgba(124, 255, 219, 0.5);
+  color: #7cffdb;
+}
+
+/* Mic Control */
+.mic-control-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.mic-button {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+  backdrop-filter: blur(10px);
+}
+
+.mic-button:active, .mic-button.is-active {
+  transform: scale(0.95);
+  background: rgba(124, 255, 219, 0.2);
+  border-color: rgba(124, 255, 219, 0.5);
+  color: #7cffdb;
+}
+
+.mic-waves {
+  position: absolute;
+  inset: -20px;
+  border-radius: 50%;
+  border: 2px solid rgba(124, 255, 219, 0.3);
+  animation: pulse-mic 1.5s infinite;
+}
+
+@keyframes pulse-mic {
+  0% { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+.user-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* Footer */
+.world-footer {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  z-index: 10;
+  pointer-events: none; /* Let clicks pass through to stage */
+}
+
+.footer-controls {
+  pointer-events: auto;
+  position: absolute;
+  bottom: 24px;
+  right: 24px;
+}
+
+.intent-bar {
+  display: none; /* Hide intent bar */
+}
+
+/* Transitions */
+.fade-slide-enter-active,
+.fade-slide-leave-active {
+  transition: all 0.3s ease;
+}
+
+.fade-slide-enter-from,
+.fade-slide-leave-to {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.scale-fade-enter-active,
+.scale-fade-leave-active {
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.scale-fade-enter-from,
+.scale-fade-leave-to {
+  opacity: 0;
+  transform: scale(0.9);
 }
 
 .dot {
@@ -428,152 +835,5 @@ onBeforeUnmount(() => {
 @keyframes bounce {
   0%, 80%, 100% { transform: scale(0); }
   40% { transform: scale(1); }
-}
-
-/* Tool Tray */
-.tool-tray {
-  position: fixed;
-  bottom: 100px;
-  left: 50%;
-  transform: translateX(-50%) translateY(100px);
-  width: 90%;
-  max-width: 600px;
-  opacity: 0;
-  pointer-events: none;
-  transition: all 0.5s cubic-bezier(0.19, 1, 0.22, 1);
-  z-index: 20;
-}
-
-.tool-tray--visible {
-  transform: translateX(-50%) translateY(0);
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.tool-card {
-  padding: 24px;
-  border-radius: 24px;
-  background: rgba(10, 20, 35, 0.85);
-  border: 1px solid var(--glow-mint);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
-}
-
-.tool-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-  color: var(--glow-mint);
-  font-weight: 600;
-  text-transform: uppercase;
-  font-size: 12px;
-  letter-spacing: 1px;
-}
-
-.quiz-question {
-  font-size: 16px;
-  font-weight: 500;
-  margin-bottom: 16px;
-}
-
-.quiz-options {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.quiz-option {
-  padding: 12px 16px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  color: var(--text-primary);
-  text-align: left;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.quiz-option:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.quiz-option.selected {
-  background: rgba(124, 255, 219, 0.15);
-  border-color: var(--glow-mint);
-  color: var(--glow-mint);
-}
-
-/* Footer */
-.world-footer {
-  padding: 16px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  border-top: 1px solid var(--glass-border);
-  z-index: 10;
-}
-
-.intent-bar {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-  scrollbar-width: none;
-}
-
-.intent-chip {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: var(--text-secondary);
-  padding: 6px 12px;
-  border-radius: 16px;
-  font-size: 12px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.intent-chip:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text-primary);
-}
-
-.input-area {
-  display: flex;
-  gap: 12px;
-}
-
-input {
-  flex: 1;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 24px;
-  padding: 12px 20px;
-  color: white;
-  font-family: inherit;
-  outline: none;
-  transition: border-color 0.2s;
-}
-
-input:focus {
-  border-color: var(--glow-ice);
-}
-
-.btn-send {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: var(--text-primary);
-  color: var(--bg-space-0);
-  border: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: transform 0.2s;
-}
-
-.btn-send:hover {
-  transform: scale(1.05);
 }
 </style>

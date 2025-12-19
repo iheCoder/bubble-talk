@@ -27,6 +27,7 @@
   --motion-slow: 420ms;
   --spring-damping: 0.86;
   --spring-stiffness: 0.12;
+  --glass-border: rgba(255, 255, 255, 0.1);
 }
 
 * {

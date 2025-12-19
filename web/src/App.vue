@@ -6,10 +6,12 @@ import WorldView from './components/WorldView.vue'
 const stage = ref('home')
 const portal = ref(null)
 const portalActive = ref(false)
+const selectedBubble = ref(null)
 
 const handleEnter = async (payload) => {
   if (portalActive.value) return
   portal.value = payload
+  selectedBubble.value = payload // Store the selected bubble data
   portalActive.value = true
   await nextTick()
   requestAnimationFrame(() => {
@@ -24,6 +26,7 @@ const handleEnter = async (payload) => {
 
 const handleExit = () => {
   stage.value = 'home'
+  selectedBubble.value = null
 }
 </script>
 
@@ -31,7 +34,7 @@ const handleExit = () => {
   <div class="app-shell" :class="{ 'app-shell--warp': !!portalActive }">
     <Transition name="fade" mode="out-in">
       <HomeView v-if="stage === 'home'" @enter-world="handleEnter" :portal-active="!!portalActive" />
-      <WorldView v-else @exit-world="handleExit" />
+      <WorldView v-else :bubble="selectedBubble" @exit-world="handleExit" />
     </Transition>
 
     <!-- Immersive Portal Transition -->
@@ -124,4 +127,3 @@ const handleExit = () => {
   100% { opacity: 0; }
 }
 </style>
-
