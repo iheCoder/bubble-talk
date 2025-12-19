@@ -106,7 +106,6 @@ const roles = computed(() => {
   ]
 })
 
-const messages = ref([])
 const activeRole = ref('host')
 const isThinking = ref(true)
 const toolState = ref('hidden')
@@ -121,17 +120,18 @@ const currentSpeech = ref({
   expert: null, // Generic key for the second role
   user: null
 })
-const isMicActive = ref(true) // Default to true for RTC
+const isMicActive = ref(true) // 默认启用：连接后允许直接说话
 const isMuted = ref(false)
+// rtcClient 保存一次 WebRTC 连接实例（OpenAI Realtime）。
 const rtcClient = ref(null)
 
-const intents = [
-  '我有疑问',
-  '展开一点',
-  '换个例子',
-  '我不信/求证',
-  '我懂了，结束',
-]
+// 远端音频元素：用于播放 OpenAI Realtime 下行的语音。
+const remoteAudioEl = ref(null)
+// 事件调试：展示最近的 Realtime 事件，便于你调参/排错。
+const transcript = ref([])
+const errorText = ref('')
+
+const isRealtimeConnected = computed(() => !!rtcClient.value)
 
 const expertRole = computed(() => getExpertRole(props.bubble?.tag))
 const roleMap = computed(() => {
@@ -164,7 +164,7 @@ const connect = async () => {
     errorText.value = ''
     const sessionId = await ensureSession()
 
-    realtime = await connectRealtime({
+    rtcClient.value = await connectRealtime({
       backendBaseUrl: '',
       sessionId,
       onRemoteStream: (stream) => {
@@ -177,7 +177,6 @@ const connect = async () => {
         transcript.value.push(evt)
       },
     })
-    isRealtimeConnected.value = true
     isMicActive.value = true
   } catch (err) {
     errorText.value = err?.message || String(err)
@@ -186,12 +185,11 @@ const connect = async () => {
 }
 
 const disconnect = () => {
-  isRealtimeConnected.value = false
   isMicActive.value = false
   try {
-    realtime?.close()
+    rtcClient.value?.close()
   } catch {}
-  realtime = null
+  rtcClient.value = null
   if (remoteAudioEl.value) {
     try { remoteAudioEl.value.pause() } catch {}
     remoteAudioEl.value.srcObject = null
@@ -291,10 +289,6 @@ const handleDisconnect = () => {
   emit('exit-world')
 }
 
-const handleIntent = (intent) => {
-  pushMessage('user', intent)
-}
-
 const handleOptionSelect = (option) => {
   if (toolResolved.value) return
   const expert = getExpertRole(props.bubble?.tag)
@@ -336,20 +330,9 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- 远端音频（OpenAI Realtime TTS 下行） -->
-  <audio ref="remoteAudioEl" autoplay playsinline></audio>
+  <audio ref="remoteAudioEl" autoplay></audio>
 
   <div class="world-view">
-    <div class="realtime-bar">
-      <button class="realtime-button" @click="isRealtimeConnected ? disconnect() : connect()">
-        {{ isRealtimeConnected ? '断开语音' : '连接语音（gpt-realtime / WebRTC）' }}
-      </button>
-      <div v-if="errorText" class="realtime-error">{{ errorText }}</div>
-    </div>
-
-    <div v-if="isRealtimeConnected" class="realtime-debug">
-      <div class="realtime-debug__title">Realtime 事件（调试用）</div>
-      <pre class="realtime-debug__body">{{ JSON.stringify(transcript.slice(-6), null, 2) }}</pre>
-    </div>
     <!-- Header Layer -->
     <header class="world-header glass-panel">
       <div class="world-header__left">
@@ -363,7 +346,32 @@ onBeforeUnmount(() => {
           <span class="world-tag">经济学 · 机会成本</span>
         </div>
       </div>
+
+      <div class="world-header__right">
+        <button
+          class="realtime-button"
+          :class="{ 'is-connected': isRealtimeConnected }"
+          @click="isRealtimeConnected ? disconnect() : connect()"
+        >
+          <span class="status-dot"></span>
+          {{ isRealtimeConnected ? '语音已连接' : '连接语音' }}
+        </button>
+      </div>
     </header>
+
+    <div v-if="isRealtimeConnected && transcript.length > 0" class="realtime-debug">
+      <div class="realtime-debug__title">调试日志</div>
+      <div class="realtime-debug__content">
+        <div v-for="(evt, i) in transcript.slice(-3)" :key="i" class="debug-item">
+          {{ evt.type }}
+        </div>
+      </div>
+    </div>
+
+    <div v-if="errorText" class="error-toast">
+      {{ errorText }}
+      <button @click="errorText = ''">✕</button>
+    </div>
 
     <!-- Round Table Stage -->
     <main class="world-stage round-table">
@@ -372,6 +380,32 @@ onBeforeUnmount(() => {
       <div class="table-surface">
         <div class="table-glow"></div>
         <div class="table-grid"></div>
+
+        <!-- Center Stage (Content Board) -->
+        <div class="center-stage">
+          <transition name="scale-fade">
+            <div v-if="toolVisible" class="content-board glass-panel holographic" :class="{ 'is-resolved': toolResolved }">
+              <div class="tool-header">
+                <span class="tool-icon">⚡️</span>
+                <span class="tool-title">快速检验</span>
+              </div>
+              <div class="quiz-content">
+                <div class="quiz-question">以下哪一个最像机会成本？</div>
+                <div class="quiz-options">
+                  <button
+                    v-for="(opt, idx) in ['看电影花的50元', '看电影花掉的2小时', '看电影时买的爆米花']"
+                    :key="idx"
+                    class="quiz-option"
+                    :class="{ 'selected': selectedOption === idx }"
+                    @click="handleOptionSelect(idx)"
+                  >
+                    {{ opt }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </transition>
+        </div>
       </div>
 
       <!-- Host Position (Top Left) -->
@@ -408,32 +442,6 @@ onBeforeUnmount(() => {
           </div>
           <div v-else-if="activeRole === expertRole.id && isThinking" key="thinking" class="speech-bubble glass-panel speech-bubble--thinking">
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          </div>
-        </transition>
-      </div>
-
-      <!-- Center Stage (Content Board) -->
-      <div class="center-stage">
-        <transition name="scale-fade">
-          <div v-if="toolVisible" class="content-board glass-panel holographic" :class="{ 'is-resolved': toolResolved }">
-            <div class="tool-header">
-              <span class="tool-icon">⚡️</span>
-              <span class="tool-title">快速检验</span>
-            </div>
-            <div class="quiz-content">
-              <div class="quiz-question">以下哪一个最像机会成本？</div>
-              <div class="quiz-options">
-                <button
-                  v-for="(opt, idx) in ['看电影花的50元', '看电影花掉的2小时', '看电影时买的爆米花']"
-                  :key="idx"
-                  class="quiz-option"
-                  :class="{ 'selected': selectedOption === idx }"
-                  @click="handleOptionSelect(idx)"
-                >
-                  {{ opt }}
-                </button>
-              </div>
-            </div>
           </div>
         </transition>
       </div>
@@ -515,6 +523,11 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+:root {
+  --role-color: #fff;
+  --accent-color: #7cffdb;
+}
+
 .world-view {
   display: grid;
   grid-template-rows: auto 1fr auto;
@@ -575,6 +588,7 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
   align-items: center;
+  overflow: hidden; /* Prevent scrollbars if animations go out */
 }
 
 .table-surface {
@@ -582,22 +596,25 @@ onBeforeUnmount(() => {
   top: 55%;
   left: 50%;
   transform: translate(-50%, -50%) rotateX(60deg);
-  width: 600px;
-  height: 600px;
+  width: 55vmin; /* Responsive size */
+  height: 55vmin;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.03) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.02) 0%, transparent 70%);
   border: 1px solid rgba(255, 255, 255, 0.05);
-  box-shadow: 0 0 100px rgba(0, 0, 0, 0.5);
+  box-shadow:
+    0 0 50px rgba(0, 0, 0, 0.5),
+    inset 0 0 100px rgba(0, 0, 0, 0.8);
   pointer-events: none;
   z-index: 1;
+  transform-style: preserve-3d;
 }
 
 .table-glow {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(124, 255, 219, 0.05) 0%, transparent 60%);
-  animation: pulse-table 4s infinite ease-in-out;
+  background: radial-gradient(circle, rgba(124, 255, 219, 0.03) 0%, transparent 60%);
+  animation: pulse-table 6s infinite ease-in-out;
 }
 
 .table-grid {
@@ -605,15 +622,15 @@ onBeforeUnmount(() => {
   inset: 0;
   border-radius: 50%;
   background-image:
-    radial-gradient(rgba(255, 255, 255, 0.1) 1px, transparent 1px);
-  background-size: 40px 40px;
-  opacity: 0.3;
-  mask-image: radial-gradient(circle, black 30%, transparent 70%);
+    radial-gradient(rgba(255, 255, 255, 0.15) 1px, transparent 1px);
+  background-size: 8% 8%; /* Relative grid size */
+  opacity: 0.2;
+  mask-image: radial-gradient(circle, black 40%, transparent 80%);
 }
 
 @keyframes pulse-table {
-  0%, 100% { opacity: 0.5; transform: scale(1); }
-  50% { opacity: 0.8; transform: scale(1.05); }
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.02); }
 }
 
 .seat {
@@ -626,19 +643,19 @@ onBeforeUnmount(() => {
 }
 
 .seat--host {
-  top: 10%;
-  left: 15%;
+  top: 12%;
+  left: 12%;
   align-items: flex-start;
 }
 
 .seat--economist {
-  top: 10%;
-  right: 15%;
+  top: 12%;
+  right: 12%;
   align-items: flex-end;
 }
 
 .seat--user {
-  bottom: 5%;
+  bottom: 8%;
   left: 50%;
   transform: translateX(-50%);
   align-items: center;
@@ -756,77 +773,84 @@ onBeforeUnmount(() => {
   position: absolute;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%);
-  width: 100%;
-  max-width: 400px;
+  transform: translate(-50%, -50%) rotateX(-45deg); /* Slightly tilted back for "on table" feel */
+  width: 80%;
+  height: 80%;
   display: flex;
   justify-content: center;
   align-items: center;
-  z-index: 20; /* Above table */
+  z-index: 20;
+  pointer-events: auto; /* Allow interaction */
 }
 
 .content-board {
   width: 100%;
-  background: rgba(10, 20, 40, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 16px;
+  max-width: 360px;
+  background: rgba(10, 20, 40, 0.05); /* Almost invisible background */
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 20px;
   padding: 24px;
-  backdrop-filter: blur(12px);
-  box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+  backdrop-filter: blur(1px); /* Minimal blur */
+  box-shadow: none;
   transform-style: preserve-3d;
+  transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 .content-board.holographic {
-  background: rgba(10, 20, 40, 0.4);
-  border: 1px solid rgba(124, 255, 219, 0.3);
-  box-shadow: 0 0 30px rgba(124, 255, 219, 0.1), inset 0 0 20px rgba(124, 255, 219, 0.05);
+  background: radial-gradient(circle at center, rgba(124, 255, 219, 0.08) 0%, transparent 70%);
+  border: 1px solid rgba(124, 255, 219, 0.15);
+  box-shadow:
+    0 0 40px rgba(124, 255, 219, 0.05),
+    inset 0 0 40px rgba(124, 255, 219, 0.02);
 }
 
 .tool-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
   color: var(--accent-color, #7cffdb);
   font-weight: 600;
   text-transform: uppercase;
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 1px;
+  opacity: 0.8;
 }
 
 .quiz-question {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 500;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   line-height: 1.4;
+  color: rgba(255, 255, 255, 0.9);
 }
 
 .quiz-options {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .quiz-option {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  padding: 16px;
-  border-radius: 12px;
-  color: #fff;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 12px 16px;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.8);
   text-align: left;
   cursor: pointer;
   transition: all 0.2s;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .quiz-option:hover {
-  background: rgba(255, 255, 255, 0.1);
-  transform: translateX(4px);
+  background: rgba(255, 255, 255, 0.08);
+  transform: translateX(2px);
 }
 
 .quiz-option.selected {
-  background: rgba(124, 255, 219, 0.2);
-  border-color: rgba(124, 255, 219, 0.5);
+  background: rgba(124, 255, 219, 0.15);
+  border-color: rgba(124, 255, 219, 0.4);
   color: #7cffdb;
 }
 
@@ -965,9 +989,6 @@ onBeforeUnmount(() => {
   right: 24px;
 }
 
-.intent-bar {
-  display: none; /* Hide intent bar */
-}
 
 /* Transitions */
 .fade-slide-enter-active,
@@ -1006,5 +1027,159 @@ onBeforeUnmount(() => {
 @keyframes bounce {
   0%, 80%, 100% { transform: scale(0); }
   40% { transform: scale(1); }
+}
+
+/* Utility Classes */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.btn-keyboard {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-keyboard:hover {
+  background: rgba(255, 255, 255, 0.15);
+  transform: translateY(-2px);
+}
+
+.input-overlay {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 90%;
+  max-width: 600px;
+  padding: 8px;
+  border-radius: 12px;
+  display: flex;
+  gap: 8px;
+  z-index: 100;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+}
+
+.input-overlay input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: white;
+  font-size: 16px;
+  padding: 8px 12px;
+  outline: none;
+}
+
+.btn-close-input {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  padding: 0 12px;
+  font-size: 18px;
+}
+
+.btn-close-input:hover {
+  color: white;
+}
+
+/* Realtime Controls */
+.realtime-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  backdrop-filter: blur(4px);
+}
+
+.realtime-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.realtime-button.is-connected {
+  background: rgba(124, 255, 219, 0.15);
+  border-color: rgba(124, 255, 219, 0.3);
+  color: #7cffdb;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.realtime-button.is-connected .status-dot {
+  box-shadow: 0 0 8px currentColor;
+}
+
+.realtime-debug {
+  position: absolute;
+  top: 80px;
+  left: 24px;
+  width: 200px;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.realtime-debug__title {
+  font-weight: 600;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  opacity: 0.5;
+}
+
+.debug-item {
+  margin-bottom: 2px;
+  font-family: monospace;
+}
+
+.error-toast {
+  position: absolute;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 80, 80, 0.9);
+  color: white;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.error-toast button {
+  background: transparent;
+  border: none;
+  color: white;
+  cursor: pointer;
+  opacity: 0.8;
+  padding: 0;
 }
 </style>
