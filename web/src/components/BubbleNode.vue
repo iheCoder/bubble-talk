@@ -8,7 +8,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['select', 'drag-start', 'drag-end'])
+const emit = defineEmits(['select', 'drag-start', 'drag-end', 'hover-start', 'hover-end'])
 const nodeRef = ref(null)
 
 const style = computed(() => ({
@@ -37,15 +37,24 @@ const handleClick = () => {
   <div
     ref="nodeRef"
     class="bubble-node"
+    :class="{ 'bubble-node--hover': bubble.hover, 'bubble-node--dim': bubble.dim }"
     :style="style"
     @pointerdown.stop="emit('drag-start', bubble, $event)"
     @pointerup.stop="emit('drag-end')"
+    @pointerenter="emit('hover-start', bubble)"
+    @pointerleave="emit('hover-end', bubble)"
     @click.stop="handleClick"
   >
     <div class="bubble-node__glass">
       <div class="bubble-node__title">{{ bubble.title }}</div>
       <div class="bubble-node__subtitle">{{ bubble.subtitle }}</div>
       <div class="bubble-node__tag">{{ bubble.tag }}</div>
+      <div class="bubble-node__preview">
+        <div class="bubble-node__detail">{{ bubble.detail }}</div>
+        <div class="bubble-node__keywords">
+          <span v-for="keyword in bubble.keywords" :key="keyword" class="bubble-node__keyword">{{ keyword }}</span>
+        </div>
+      </div>
     </div>
   </div>
 </template>

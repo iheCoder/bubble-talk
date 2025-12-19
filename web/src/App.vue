@@ -28,9 +28,14 @@ const handleExit = () => {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'app-shell--warp': !!portalActive }">
     <HomeView v-if="stage === 'home'" @enter-world="handleEnter" :portal-active="!!portalActive" />
     <WorldView v-else @exit-world="handleExit" />
+
+    <div v-if="portalActive" class="warp-overlay">
+      <div class="warp-overlay__core"></div>
+      <div class="warp-overlay__rays"></div>
+    </div>
 
     <div
       v-if="portal && portalActive"
@@ -43,6 +48,8 @@ const handleExit = () => {
         '--glow': portal.glow,
       }"
     >
+      <div class="transition-portal__grid"></div>
+      <div class="transition-portal__rays"></div>
       <div class="transition-portal__core">
         <div class="transition-portal__title">{{ portal.title }}</div>
         <div class="transition-portal__subtitle">{{ portal.subtitle }}</div>

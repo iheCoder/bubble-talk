@@ -19,6 +19,8 @@ const bubbleSeed = [
     subtitle: '机会成本藏在时间里',
     tag: '经济',
     glow: 'rgba(88, 214, 255, 0.7)',
+    detail: '时间是一种资产，它的代价常常被低估。',
+    keywords: ['机会成本', '价值选择', '隐性代价'],
   },
   {
     id: 2,
@@ -26,6 +28,8 @@ const bubbleSeed = [
     subtitle: '遗忘曲线与间隔重复',
     tag: '学习',
     glow: 'rgba(124, 255, 219, 0.7)',
+    detail: '记忆不是一次性写入，而是被安排复习。',
+    keywords: ['遗忘曲线', '间隔重复', '巩固'],
   },
   {
     id: 3,
@@ -33,6 +37,8 @@ const bubbleSeed = [
     subtitle: '韦伯伦效应的暗号',
     tag: '行为',
     glow: 'rgba(255, 196, 110, 0.7)',
+    detail: '有些商品卖的不是性价比，而是信号。',
+    keywords: ['韦伯伦', '炫耀性消费', '身份信号'],
   },
   {
     id: 4,
@@ -40,6 +46,8 @@ const bubbleSeed = [
     subtitle: '认知重评的微光',
     tag: '心理',
     glow: 'rgba(155, 166, 255, 0.7)',
+    detail: '焦虑不一定是敌人，它也可以是灯。',
+    keywords: ['认知重评', '压力曲线', '自我对话'],
   },
   {
     id: 5,
@@ -47,6 +55,8 @@ const bubbleSeed = [
     subtitle: '执行意图的设计',
     tag: '效率',
     glow: 'rgba(118, 245, 169, 0.7)',
+    detail: '计划需要被“绑定”，才能抵抗日常噪声。',
+    keywords: ['执行意图', '触发器', '可执行'],
   },
   {
     id: 6,
@@ -54,6 +64,8 @@ const bubbleSeed = [
     subtitle: '意志的补给线',
     tag: '心理',
     glow: 'rgba(255, 168, 209, 0.7)',
+    detail: '自控像肌肉，但也受环境与动机影响。',
+    keywords: ['自控力', '动机', '补给'],
   },
   {
     id: 7,
@@ -61,6 +73,8 @@ const bubbleSeed = [
     subtitle: '即时奖励的幻象',
     tag: '经济',
     glow: 'rgba(138, 220, 255, 0.7)',
+    detail: '奖励被提前了，后果被延迟了。',
+    keywords: ['即时奖励', '延迟满足', '情绪'],
   },
   {
     id: 8,
@@ -68,6 +82,8 @@ const bubbleSeed = [
     subtitle: '相关不等于因果',
     tag: '方法',
     glow: 'rgba(197, 255, 161, 0.7)',
+    detail: '看见相关，不代表看见机制。',
+    keywords: ['因果', '变量', '实验'],
   },
   {
     id: 9,
@@ -75,6 +91,8 @@ const bubbleSeed = [
     subtitle: '提问框架的力量',
     tag: '沟通',
     glow: 'rgba(255, 212, 148, 0.7)',
+    detail: '问题的结构决定了答案的清晰度。',
+    keywords: ['提问框架', '澄清', '边界'],
   },
   {
     id: 10,
@@ -82,6 +100,8 @@ const bubbleSeed = [
     subtitle: '实践与理论的对齐',
     tag: '学习',
     glow: 'rgba(122, 255, 239, 0.7)',
+    detail: '行动与知识之间需要被安排对齐。',
+    keywords: ['实践', '理论', '闭环'],
   },
 ]
 
