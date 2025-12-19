@@ -1,0 +1,16 @@
+[
+  {
+    "entry_id": "econ_weekend_overtime",
+    "domain": "economics",
+    "title": "周末加班到底值不值？",
+    "hook": "你以为赚了800，可能亏了更贵的东西。",
+    "primary_concept_id": "econ_opportunity_cost"
+  },
+  {
+    "entry_id": "prog_cache_miss",
+    "domain": "programming",
+    "title": "为什么缓存命中率高，P99 还是爆？",
+    "hook": "你以为是缓存，其实是队列和抖动。",
+    "primary_concept_id": "prog_tail_latency"
+  }
+]

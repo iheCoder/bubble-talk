@@ -1,0 +1,17 @@
+{
+  "econ_opportunity_cost": {
+    "core_relation": "机会成本=放弃的最好替代选择的价值（不是支出本身）",
+    "misconceptions": [
+      {"tag": "M1_money_spent", "desc": "把机会成本当成花出去的钱"},
+      {"tag": "M2_sunk_cost", "desc": "混淆沉没成本与机会成本"}
+    ],
+    "boundaries": [
+      "当替代选项不明确时，需要补充‘最好替代’的假设或比较标准"
+    ],
+    "transfer_targets": [
+      "产品砍功能的取舍",
+      "团队资源分配",
+      "个人 offer 选择"
+    ]
+  }
+}
