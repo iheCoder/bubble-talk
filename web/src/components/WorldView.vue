@@ -375,11 +375,14 @@ onBeforeUnmount(() => {
 
     <!-- Round Table Stage -->
     <main class="world-stage round-table">
-
-      <!-- The Table Surface -->
-      <div class="table-surface">
-        <div class="table-glow"></div>
-        <div class="table-grid"></div>
+      <div class="table-orbit">
+        <!-- The Table Surface -->
+        <div class="table-surface">
+          <div class="table-glow"></div>
+          <div class="table-grid"></div>
+          <div class="table-rim"></div>
+          <div class="table-core"></div>
+        </div>
 
         <!-- Center Stage (Content Board) -->
         <div class="center-stage">
@@ -406,10 +409,9 @@ onBeforeUnmount(() => {
             </div>
           </transition>
         </div>
-      </div>
 
-      <!-- Host Position (Top Left) -->
-      <div class="seat seat--host" :class="{ 'is-speaking': activeRole === 'host' && (isThinking || currentSpeech.host) }">
+        <!-- Host Position (Top Left) -->
+        <div class="seat seat--host" :class="{ 'is-speaking': activeRole === 'host' && (isThinking || currentSpeech.host) }">
         <div class="avatar-container">
           <div class="avatar-halo"></div>
           <div class="avatar-circle" :style="{ '--role-color': roleMap['host'].color }">
@@ -490,7 +492,7 @@ onBeforeUnmount(() => {
            </div>
         </div>
       </div>
-
+      </div>
     </main>
 
     <!-- Footer Controls (Intents only) -->
@@ -532,9 +534,38 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-rows: auto 1fr auto;
   height: 100vh;
-  background: radial-gradient(circle at 50% 50%, #1a2a4a 0%, #05070a 100%);
+  background: radial-gradient(circle at 50% 40%, #162f53 0%, #05070a 70%);
   position: relative;
   overflow: hidden;
+}
+
+.world-view::before {
+  content: '';
+  position: absolute;
+  inset: -10% -20%;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(124, 255, 219, 0.12), transparent 45%),
+    radial-gradient(circle at 80% 30%, rgba(255, 190, 120, 0.1), transparent 50%),
+    radial-gradient(circle at 50% 80%, rgba(140, 200, 255, 0.12), transparent 55%);
+  filter: blur(30px);
+  opacity: 0.8;
+  z-index: 0;
+}
+
+.world-view::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  background-size: 120px 120px;
+  opacity: 0.08;
+  z-index: 0;
+}
+
+.world-view > * {
+  position: relative;
+  z-index: 1;
 }
 
 /* Header */
@@ -585,19 +616,54 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   perspective: 1000px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
   overflow: hidden; /* Prevent scrollbars if animations go out */
+}
+
+.table-orbit {
+  position: absolute;
+  left: 50%;
+  top: 56%;
+  transform: translate(-50%, -50%);
+  width: 90vmin;
+  height: 90vmin;
+  max-width: 920px;
+  max-height: 920px;
+}
+
+.table-orbit::before {
+  content: '';
+  position: absolute;
+  inset: 4%;
+  border-radius: 50%;
+  border: 1px solid rgba(124, 255, 219, 0.08);
+  box-shadow: 0 0 40px rgba(124, 255, 219, 0.08);
+  opacity: 0.6;
+}
+
+.table-orbit::after {
+  content: '';
+  position: absolute;
+  inset: -6%;
+  border-radius: 50%;
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  opacity: 0.35;
+  animation: orbit-spin 40s linear infinite;
+}
+
+@keyframes orbit-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .table-surface {
   position: absolute;
-  top: 55%;
+  top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%) rotateX(60deg);
-  width: 55vmin; /* Responsive size */
-  height: 55vmin;
+  transform: translate(-50%, -50%) rotateX(58deg);
+  width: 68vmin; /* Responsive size */
+  height: 68vmin;
+  max-width: 680px;
+  max-height: 680px;
   border-radius: 50%;
   background: radial-gradient(circle, rgba(255, 255, 255, 0.02) 0%, transparent 70%);
   border: 1px solid rgba(255, 255, 255, 0.05);
@@ -628,6 +694,25 @@ onBeforeUnmount(() => {
   mask-image: radial-gradient(circle, black 40%, transparent 80%);
 }
 
+.table-rim {
+  position: absolute;
+  inset: 4%;
+  border-radius: 50%;
+  border: 2px solid rgba(124, 255, 219, 0.15);
+  box-shadow:
+    0 0 30px rgba(124, 255, 219, 0.2),
+    inset 0 0 20px rgba(124, 255, 219, 0.15);
+  opacity: 0.8;
+}
+
+.table-core {
+  position: absolute;
+  inset: 28%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(124, 255, 219, 0.1), transparent 70%);
+  box-shadow: inset 0 0 25px rgba(124, 255, 219, 0.2);
+}
+
 @keyframes pulse-table {
   0%, 100% { opacity: 0.3; transform: scale(1); }
   50% { opacity: 0.6; transform: scale(1.02); }
@@ -643,23 +728,25 @@ onBeforeUnmount(() => {
 }
 
 .seat--host {
-  top: 12%;
-  left: 12%;
+  top: 18%;
+  left: 18%;
+  transform: translate(-50%, -50%);
   align-items: flex-start;
 }
 
 .seat--economist {
-  top: 12%;
-  right: 12%;
+  top: 18%;
+  left: 82%;
+  transform: translate(-50%, -50%);
   align-items: flex-end;
 }
 
 .seat--user {
-  bottom: 8%;
+  top: 92%;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
   align-items: center;
-  width: 100%;
+  width: auto;
 }
 
 /* Avatar Styling */
@@ -773,42 +860,67 @@ onBeforeUnmount(() => {
   position: absolute;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%) rotateX(-45deg); /* Slightly tilted back for "on table" feel */
-  width: 80%;
-  height: 80%;
+  transform: translate(-50%, -50%) rotateX(18deg);
+  width: 42vmin;
+  height: 42vmin;
+  max-width: 460px;
+  max-height: 460px;
   display: flex;
   justify-content: center;
   align-items: center;
   z-index: 20;
   pointer-events: auto; /* Allow interaction */
+  filter: drop-shadow(0 20px 40px rgba(0, 0, 0, 0.45));
+}
+
+.center-stage::before {
+  content: '';
+  position: absolute;
+  inset: 6%;
+  border-radius: 50%;
+  border: 1px solid rgba(124, 255, 219, 0.2);
+  box-shadow: inset 0 0 20px rgba(124, 255, 219, 0.2);
+  opacity: 0.6;
+  pointer-events: none;
 }
 
 .content-board {
   width: 100%;
-  max-width: 360px;
-  background: rgba(10, 20, 40, 0.05); /* Almost invisible background */
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 20px;
-  padding: 24px;
-  backdrop-filter: blur(1px); /* Minimal blur */
-  box-shadow: none;
+  height: 100%;
+  max-width: 460px;
+  max-height: 460px;
+  background: rgba(10, 20, 40, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 50%;
+  padding: 32px;
+  backdrop-filter: blur(8px);
+  box-shadow:
+    0 0 40px rgba(0, 0, 0, 0.35),
+    inset 0 0 40px rgba(124, 255, 219, 0.08);
   transform-style: preserve-3d;
   transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
 }
 
 .content-board.holographic {
-  background: radial-gradient(circle at center, rgba(124, 255, 219, 0.08) 0%, transparent 70%);
-  border: 1px solid rgba(124, 255, 219, 0.15);
+  background:
+    radial-gradient(circle at center, rgba(124, 255, 219, 0.18) 0%, transparent 70%),
+    radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.08), transparent 60%);
+  border: 1px solid rgba(124, 255, 219, 0.2);
   box-shadow:
-    0 0 40px rgba(124, 255, 219, 0.05),
-    inset 0 0 40px rgba(124, 255, 219, 0.02);
+    0 0 60px rgba(124, 255, 219, 0.12),
+    inset 0 0 50px rgba(124, 255, 219, 0.08);
 }
 
 .tool-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
   color: var(--accent-color, #7cffdb);
   font-weight: 600;
   text-transform: uppercase;
@@ -818,34 +930,38 @@ onBeforeUnmount(() => {
 }
 
 .quiz-question {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 500;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
   line-height: 1.4;
   color: rgba(255, 255, 255, 0.9);
+  max-width: 80%;
 }
 
 .quiz-options {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  width: 100%;
+  align-items: center;
 }
 
 .quiz-option {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 12px 16px;
-  border-radius: 8px;
+  width: 78%;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(124, 255, 219, 0.06));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 12px 18px;
+  border-radius: 999px;
   color: rgba(255, 255, 255, 0.8);
-  text-align: left;
+  text-align: center;
   cursor: pointer;
   transition: all 0.2s;
   font-size: 14px;
 }
 
 .quiz-option:hover {
-  background: rgba(255, 255, 255, 0.08);
-  transform: translateX(2px);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.12), rgba(124, 255, 219, 0.14));
+  transform: translateY(-2px);
 }
 
 .quiz-option.selected {
@@ -969,6 +1085,54 @@ onBeforeUnmount(() => {
 
 .control-btn.btn-hangup:hover {
   background: rgba(255, 80, 80, 1);
+}
+
+@media (max-width: 900px) {
+  .table-orbit {
+    width: 96vmin;
+    height: 96vmin;
+    top: 58%;
+  }
+
+  .table-surface {
+    width: 72vmin;
+    height: 72vmin;
+  }
+
+  .center-stage {
+    width: 48vmin;
+    height: 48vmin;
+  }
+
+  .seat--host {
+    top: 16%;
+    left: 14%;
+  }
+
+  .seat--economist {
+    top: 16%;
+    left: 86%;
+  }
+
+  .seat--user {
+    top: 94%;
+  }
+}
+
+@media (max-width: 600px) {
+  .center-stage {
+    width: 54vmin;
+    height: 54vmin;
+    transform: translate(-50%, -50%) rotateX(12deg);
+  }
+
+  .content-board {
+    padding: 24px;
+  }
+
+  .quiz-option {
+    width: 86%;
+  }
 }
 
 /* Footer */
