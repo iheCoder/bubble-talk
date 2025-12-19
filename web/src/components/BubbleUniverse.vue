@@ -32,22 +32,30 @@ const universe = reactive({
 const initBubbles = () => {
   const count = props.bubbles.length
   universe.bubbles = props.bubbles.map((bubble, index) => {
-    const angle = (index / count) * Math.PI * 2
-    const radius = 70 + (index % 4) * 8
-    const anchorX = universe.width * 0.2 + Math.cos(angle) * universe.width * 0.3 + Math.random() * 60
-    const anchorY = universe.height * 0.45 + Math.sin(angle) * universe.height * 0.25 + Math.random() * 60
+    // Distribute bubbles in a more organic, galaxy-like spiral
+    const angle = (index / count) * Math.PI * 2 + (Math.random() * 0.5)
+    const distance = Math.min(universe.width, universe.height) * 0.35
+    const anchorX = universe.width * 0.5 + Math.cos(angle) * distance * (0.8 + Math.random() * 0.4)
+    const anchorY = universe.height * 0.5 + Math.sin(angle) * distance * (0.8 + Math.random() * 0.4)
+
+    // Varied sizes for depth perception
+    const baseSize = 90
+    const sizeVariation = Math.random() * 40
+    const radius = baseSize + sizeVariation
+
     return {
       ...bubble,
       x: anchorX,
       y: anchorY,
       anchorX,
       anchorY,
-      vx: (Math.random() - 0.5) * 0.4,
-      vy: (Math.random() - 0.5) * 0.4,
+      vx: (Math.random() - 0.5) * 0.2,
+      vy: (Math.random() - 0.5) * 0.2,
       radius,
-      drift: Math.random() * 10,
+      drift: Math.random() * 100,
       hover: false,
       dim: false,
+      mass: radius / 50, // Heavier bubbles move slower
     }
   })
 
@@ -76,95 +84,83 @@ const initBubbles = () => {
 
 const update = () => {
   const time = performance.now() / 1000
-  const padding = 90
+  const padding = 120
   const hoveredBubble = universe.hoverId ? universe.bubbles.find((bubble) => bubble.id === universe.hoverId) : null
 
   universe.bubbles.forEach((bubble, i) => {
     bubble.dim = !!hoveredBubble && hoveredBubble.id !== bubble.id
-    const spring = 0.0024
+
+    // Buoyancy & Drift (Deep Space Physics)
+    // Gentle return to anchor
+    const spring = 0.0008 / bubble.mass
     const dxAnchor = bubble.anchorX - bubble.x
     const dyAnchor = bubble.anchorY - bubble.y
     bubble.vx += dxAnchor * spring
     bubble.vy += dyAnchor * spring
 
-    const noise = Math.sin(time + bubble.drift + i) * 0.02
-    bubble.vx += noise
-    bubble.vy += Math.cos(time * 0.7 + bubble.drift) * 0.02
+    // Perlin-like noise for organic drift
+    const noiseStrength = 0.08 / bubble.mass
+    bubble.vx += Math.sin(time * 0.5 + bubble.drift + i) * noiseStrength
+    bubble.vy += Math.cos(time * 0.3 + bubble.drift + i * 0.5) * noiseStrength
 
+    // Mouse Interaction: Magnetic Pull & Repulsion
     if (pointer.active) {
       const dx = bubble.x - pointer.x
       const dy = bubble.y - pointer.y
-      const dist = Math.max(30, Math.hypot(dx, dy))
-      if (dist < 220) {
-        const force = (220 - dist) / 220
-        bubble.vx += (dx / dist) * force * 0.2
-        bubble.vy += (dy / dist) * force * 0.2
+      const dist = Math.hypot(dx, dy)
+      const influenceRadius = 400
+
+      if (dist < influenceRadius) {
+        if (universe.hoverId === bubble.id) {
+           // Magnetic Pull (Gentle)
+           const pullStrength = 0.02
+           bubble.vx -= (dx / dist) * pullStrength
+           bubble.vy -= (dy / dist) * pullStrength
+        } else {
+           // Gentle Repulsion for others to clear view
+           const pushStrength = (influenceRadius - dist) / influenceRadius * 0.05
+           bubble.vx += (dx / dist) * pushStrength
+           bubble.vy += (dy / dist) * pushStrength
+        }
       }
     }
 
-    if (hoveredBubble && hoveredBubble.id !== bubble.id) {
-      const dx = bubble.x - hoveredBubble.x
-      const dy = bubble.y - hoveredBubble.y
-      const dist = Math.max(40, Math.hypot(dx, dy))
-      if (dist < 260) {
-        const force = (260 - dist) / 260
-        bubble.vx += (dx / dist) * force * 0.35
-        bubble.vy += (dy / dist) * force * 0.35
-      }
-    }
+    // Damping (Water resistance)
+    bubble.vx *= 0.96
+    bubble.vy *= 0.96
 
-    universe.bubbles.forEach((other, j) => {
-      if (i === j) return
-      const dx = bubble.x - other.x
-      const dy = bubble.y - other.y
-      const dist = Math.max(1, Math.hypot(dx, dy))
-      const minDist = bubble.radius + other.radius + 32
-      if (dist < minDist) {
-        const force = (minDist - dist) / minDist
-        const strength = bubble.id === universe.hoverId || other.id === universe.hoverId ? 0.2 : 0.14
-        bubble.vx += (dx / dist) * force * strength
-        bubble.vy += (dy / dist) * force * strength
-      }
-    })
+    bubble.x += bubble.vx
+    bubble.y += bubble.vy
 
-    if (universe.dragId === bubble.id) {
-      bubble.x += (pointer.x - bubble.x) * 0.18
-      bubble.y += (pointer.y - bubble.y) * 0.18
-      bubble.vx *= 0.6
-      bubble.vy *= 0.6
-    } else if (universe.hoverId === bubble.id && pointer.active) {
-      bubble.x += (pointer.x - bubble.x) * 0.14
-      bubble.y += (pointer.y - bubble.y) * 0.14
-      bubble.vx *= 0.35
-      bubble.vy *= 0.35
-    } else {
-      bubble.vx *= 0.9
-      bubble.vy *= 0.9
-      bubble.x += bubble.vx
-      bubble.y += bubble.vy
-    }
-
-    const xMin = padding
-    const xMax = universe.width - padding
-    const yMin = padding
-    const yMax = universe.height - padding
-    if (bubble.x < xMin) {
-      bubble.x = xMin
-      bubble.vx *= -0.35
-    }
-    if (bubble.x > xMax) {
-      bubble.x = xMax
-      bubble.vx *= -0.35
-    }
-    if (bubble.y < yMin) {
-      bubble.y = yMin
-      bubble.vy *= -0.35
-    }
-    if (bubble.y > yMax) {
-      bubble.y = yMax
-      bubble.vy *= -0.35
-    }
+    // Soft Boundaries
+    if (bubble.x < padding) bubble.vx += 0.05
+    if (bubble.x > universe.width - padding) bubble.vx -= 0.05
+    if (bubble.y < padding) bubble.vy += 0.05
+    if (bubble.y > universe.height - padding) bubble.vy -= 0.05
   })
+
+  // Collision Resolution (Soft Nudge)
+  for (let i = 0; i < universe.bubbles.length; i++) {
+    for (let j = i + 1; j < universe.bubbles.length; j++) {
+      const b1 = universe.bubbles[i]
+      const b2 = universe.bubbles[j]
+      const dx = b2.x - b1.x
+      const dy = b2.y - b1.y
+      const dist = Math.hypot(dx, dy)
+      const minDist = b1.radius + b2.radius + 40 // Extra spacing
+
+      if (dist < minDist) {
+        const force = (minDist - dist) * 0.005 // Very soft collision
+        const nx = dx / dist
+        const ny = dy / dist
+
+        b1.vx -= nx * force
+        b1.vy -= ny * force
+        b2.vx += nx * force
+        b2.vy += ny * force
+      }
+    }
+  }
 
   frameRef.value = requestAnimationFrame(update)
 }

@@ -29,31 +29,99 @@ const handleExit = () => {
 
 <template>
   <div class="app-shell" :class="{ 'app-shell--warp': !!portalActive }">
-    <HomeView v-if="stage === 'home'" @enter-world="handleEnter" :portal-active="!!portalActive" />
-    <WorldView v-else @exit-world="handleExit" />
+    <Transition name="fade" mode="out-in">
+      <HomeView v-if="stage === 'home'" @enter-world="handleEnter" :portal-active="!!portalActive" />
+      <WorldView v-else @exit-world="handleExit" />
+    </Transition>
 
-    <div v-if="portalActive" class="warp-overlay">
-      <div class="warp-overlay__core"></div>
-      <div class="warp-overlay__rays"></div>
-    </div>
-
+    <!-- Immersive Portal Transition -->
     <div
       v-if="portal && portalActive"
-      class="transition-portal"
-      :class="{ 'transition-portal--animate': portalActive === 'animating' }"
+      class="portal-layer"
+      :class="{ 'portal-layer--active': portalActive === 'animating' }"
       :style="{
-        '--start-x': `${portal.centerX}px`,
-        '--start-y': `${portal.centerY}px`,
-        '--start-size': `${portal.size}px`,
-        '--glow': portal.glow,
+        '--origin-x': `${portal.centerX}px`,
+        '--origin-y': `${portal.centerY}px`,
+        '--origin-size': `${portal.size}px`,
+        '--portal-color': portal.glow,
       }"
     >
-      <div class="transition-portal__grid"></div>
-      <div class="transition-portal__rays"></div>
-      <div class="transition-portal__core">
-        <div class="transition-portal__title">{{ portal.title }}</div>
-        <div class="transition-portal__subtitle">{{ portal.subtitle }}</div>
+      <div class="portal-bubble">
+        <div class="portal-bubble__inner"></div>
       </div>
+      <div class="portal-flash"></div>
     </div>
   </div>
 </template>
+
+<style>
+.app-shell {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: #000;
+}
+
+.portal-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.portal-bubble {
+  position: absolute;
+  left: var(--origin-x);
+  top: var(--origin-y);
+  width: var(--origin-size);
+  height: var(--origin-size);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--portal-color);
+  transition: all 0.8s cubic-bezier(0.7, 0, 0.3, 1);
+  will-change: transform, width, height, opacity;
+  z-index: 1;
+}
+
+.portal-bubble__inner {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,255,255,0.8) 0%, transparent 70%);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+.portal-flash {
+  position: absolute;
+  inset: 0;
+  background: white;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: 2;
+}
+
+.portal-layer--active .portal-bubble {
+  width: 300vmax;
+  height: 300vmax;
+  opacity: 1;
+}
+
+.portal-layer--active .portal-bubble__inner {
+  opacity: 1;
+}
+
+.portal-layer--active .portal-flash {
+  animation: flash 0.8s ease forwards;
+}
+
+@keyframes flash {
+  0% { opacity: 0; }
+  50% { opacity: 0.8; }
+  100% { opacity: 0; }
+}
+</style>
+
