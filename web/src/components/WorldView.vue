@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { BubbleTalkGateway, AudioPlayer } from '../api/gateway.js'
+import hostAvatar from '../assets/host.png'
 import { getExpertRole } from './worldview/roles.js'
 import WorldHeader from './worldview/WorldHeader.vue'
 import WorldDebugPanel from './worldview/WorldDebugPanel.vue'
@@ -34,6 +35,8 @@ const roles = computed(() => {
       color: 'rgba(124, 255, 219, 0.7)',
       accent: 'rgba(124, 255, 219, 0.35)',
       avatar: 'H',
+      avatarImage: hostAvatar,
+      voice: 'Marin',
     },
     expert,
     {

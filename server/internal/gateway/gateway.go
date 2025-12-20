@@ -78,9 +78,10 @@ type Gateway struct {
 type GatewayConfig struct {
 	// OpenAI Realtime配置
 	OpenAIAPIKey      string
-	OpenAIRealtimeURL string // wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17
+	OpenAIRealtimeURL string // wss://api.openai.com/v1/realtime?model=gpt-realtime-2025-08-28
 	Model             string
 	Voice             string
+	RoleProfiles      map[string]RoleProfile
 
 	// 默认指令（基础人设）
 	DefaultInstructions string
@@ -94,6 +95,11 @@ type GatewayConfig struct {
 	InputAudioFormat             string // pcm16
 	OutputAudioFormat            string // pcm16
 	InputAudioTranscriptionModel string
+}
+
+type RoleProfile struct {
+	Voice  string
+	Avatar string
 }
 
 // NewGateway 创建一个新的Gateway实例
@@ -159,7 +165,7 @@ func (g *Gateway) connectRealtime(ctx context.Context) error {
 	if url == "" {
 		model := g.config.Model
 		if model == "" {
-			model = "gpt-4o-realtime-preview-2024-12-17"
+			model = "gpt-realtime-2025-08-28"
 		}
 		url = fmt.Sprintf("wss://api.openai.com/v1/realtime?model=%s", model)
 	}
@@ -209,7 +215,7 @@ func (g *Gateway) initRealtimeSession(_ context.Context) error {
 		Session: RealtimeSessionConfig{
 			Modalities:        []string{"text", "audio"},
 			Instructions:      g.config.DefaultInstructions,
-			Voice:             g.config.Voice,
+			Voice:             g.defaultVoice(),
 			InputAudioFormat:  g.config.InputAudioFormat,
 			OutputAudioFormat: g.config.OutputAudioFormat,
 			InputAudioTranscription: &InputAudioTranscriptionConfig{
@@ -225,9 +231,6 @@ func (g *Gateway) initRealtimeSession(_ context.Context) error {
 		},
 	}
 
-	if g.config.Voice == "" {
-		update.Session.Voice = "alloy"
-	}
 	if g.config.InputAudioFormat == "" {
 		update.Session.InputAudioFormat = "pcm16"
 	}
@@ -906,16 +909,39 @@ func (g *Gateway) SendInstructions(_ context.Context, instructions string, metad
 		Response: RealtimeResponseCreateConfig{
 			Modalities:   []string{"text", "audio"},
 			Instructions: instructions,
-			Voice:        g.config.Voice,
+			Voice:        g.resolveVoice(metadata),
 			Temperature:  0.8,
 		},
 	}
 
-	if g.config.Voice == "" {
-		create.Response.Voice = "alloy"
-	}
-
 	return g.sendToRealtime(create)
+}
+
+func (g *Gateway) resolveVoice(metadata map[string]interface{}) string {
+	defaultVoice := g.defaultVoice()
+	if metadata == nil {
+		return defaultVoice
+	}
+	roleValue, ok := metadata["role"]
+	if !ok {
+		return defaultVoice
+	}
+	role, ok := roleValue.(string)
+	if !ok || role == "" {
+		return defaultVoice
+	}
+	profile, ok := g.config.RoleProfiles[role]
+	if !ok || profile.Voice == "" {
+		return defaultVoice
+	}
+	return profile.Voice
+}
+
+func (g *Gateway) defaultVoice() string {
+	if g.config.Voice == "" {
+		return "alloy"
+	}
+	return g.config.Voice
 }
 
 // sendToRealtime 发送消息到OpenAI Realtime

@@ -203,11 +203,19 @@ func (s *Server) handleSessionStream(c *gin.Context) {
 	log.Printf("[API] ✅ WebSocket upgraded successfully")
 
 	// 创建 Gateway 配置
+	roleProfiles := make(map[string]gateway.RoleProfile, len(s.config.Roles))
+	for role, profile := range s.config.Roles {
+		roleProfiles[role] = gateway.RoleProfile{
+			Voice:  profile.Voice,
+			Avatar: profile.Avatar,
+		}
+	}
 	gwConfig := gateway.GatewayConfig{
 		OpenAIAPIKey:                 s.config.OpenAI.APIKey,
 		OpenAIRealtimeURL:            s.config.OpenAI.RealtimeURL,
 		Model:                        s.config.OpenAI.Model,
 		Voice:                        s.config.OpenAI.Voice,
+		RoleProfiles:                 roleProfiles,
 		DefaultInstructions:          s.config.Gateway.DefaultInstructions,
 		ReadTimeout:                  30 * time.Second,
 		WriteTimeout:                 30 * time.Second,
@@ -347,12 +355,17 @@ func (s *Server) handleRealtimeToken(c *gin.Context) {
 		return
 	}
 
-	// 第一阶段先走环境变量，后续可把每个泡泡的 voice profile 配置化。
-	modelName := os.Getenv("OPENAI_REALTIME_MODEL")
+	modelName := s.config.OpenAI.Model
 	if modelName == "" {
-		modelName = "gpt-4o-realtime-preview"
+		modelName = os.Getenv("OPENAI_REALTIME_MODEL")
 	}
-	voice := os.Getenv("OPENAI_REALTIME_VOICE")
+	if modelName == "" {
+		modelName = "gpt-realtime-2025-08-28"
+	}
+	voice := s.config.OpenAI.Voice
+	if voice == "" {
+		voice = os.Getenv("OPENAI_REALTIME_VOICE")
+	}
 	if voice == "" {
 		voice = "alloy"
 	}

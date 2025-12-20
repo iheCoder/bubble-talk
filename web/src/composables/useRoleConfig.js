@@ -1,4 +1,6 @@
 import { computed } from 'vue'
+import economistAvatar from '../assets/economist.png'
+import hostAvatar from '../assets/host.png'
 
 const ROLE_CONFIG = {
   '经济': {
@@ -8,6 +10,8 @@ const ROLE_CONFIG = {
     color: 'rgba(188, 214, 255, 0.7)',
     accent: 'rgba(140, 200, 255, 0.35)',
     avatar: 'E',
+    avatarImage: economistAvatar,
+    voice: 'Cedar',
   },
   '心理': {
     id: 'psychologist',
@@ -16,6 +20,7 @@ const ROLE_CONFIG = {
     color: 'rgba(255, 168, 209, 0.7)',
     accent: 'rgba(255, 168, 209, 0.35)',
     avatar: 'P',
+    voice: 'Lumen',
   },
   '学习': {
     id: 'coach',
@@ -24,6 +29,7 @@ const ROLE_CONFIG = {
     color: 'rgba(124, 255, 219, 0.7)',
     accent: 'rgba(124, 255, 219, 0.35)',
     avatar: 'C',
+    voice: 'Echo',
   },
   '行为': {
     id: 'behaviorist',
@@ -32,6 +38,7 @@ const ROLE_CONFIG = {
     color: 'rgba(255, 196, 110, 0.7)',
     accent: 'rgba(255, 196, 110, 0.35)',
     avatar: 'B',
+    voice: 'Quartz',
   },
   '效率': {
     id: 'pm',
@@ -40,6 +47,7 @@ const ROLE_CONFIG = {
     color: 'rgba(118, 245, 169, 0.7)',
     accent: 'rgba(118, 245, 169, 0.35)',
     avatar: 'PM',
+    voice: 'Marin',
   },
   '沟通': {
     id: 'mediator',
@@ -48,6 +56,7 @@ const ROLE_CONFIG = {
     color: 'rgba(255, 212, 148, 0.7)',
     accent: 'rgba(255, 212, 148, 0.35)',
     avatar: 'M',
+    voice: 'Juniper',
   },
   'default': {
     id: 'expert',
@@ -56,6 +65,7 @@ const ROLE_CONFIG = {
     color: 'rgba(188, 214, 255, 0.7)',
     accent: 'rgba(140, 200, 255, 0.35)',
     avatar: 'X',
+    voice: 'Cedar',
   }
 }
 
@@ -66,6 +76,8 @@ const HOST_ROLE = {
   color: 'rgba(124, 255, 219, 0.7)',
   accent: 'rgba(124, 255, 219, 0.35)',
   avatar: 'H',
+  avatarImage: hostAvatar,
+  voice: 'Marin',
 }
 
 const USER_ROLE = {
@@ -99,5 +111,3 @@ export function useRoleConfig(bubbleTag) {
     userRole: USER_ROLE,
   }
 }
-
-

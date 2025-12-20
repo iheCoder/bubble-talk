@@ -10,15 +10,16 @@ import (
 
 // Config 全局配置
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	OpenAI   OpenAIConfig   `yaml:"openai"`
-	Gateway  GatewayConfig  `yaml:"gateway"`
-	Director DirectorConfig `yaml:"director"`
-	Actor    ActorConfig    `yaml:"actor"`
-	Session  SessionConfig  `yaml:"session"`
-	Learning LearningConfig `yaml:"learning"`
-	Logging  LoggingConfig  `yaml:"logging"`
-	Paths    PathsConfig    `yaml:"paths"`
+	Server   ServerConfig           `yaml:"server"`
+	OpenAI   OpenAIConfig           `yaml:"openai"`
+	Gateway  GatewayConfig          `yaml:"gateway"`
+	Director DirectorConfig         `yaml:"director"`
+	Actor    ActorConfig            `yaml:"actor"`
+	Session  SessionConfig          `yaml:"session"`
+	Learning LearningConfig         `yaml:"learning"`
+	Logging  LoggingConfig          `yaml:"logging"`
+	Paths    PathsConfig            `yaml:"paths"`
+	Roles    map[string]RoleProfile `yaml:"roles"`
 }
 
 type ServerConfig struct {
@@ -35,6 +36,11 @@ type OpenAIConfig struct {
 	Voice                   string  `yaml:"voice"`
 	Temperature             float64 `yaml:"temperature"`
 	MaxResponseOutputTokens int     `yaml:"max_response_output_tokens"`
+}
+
+type RoleProfile struct {
+	Voice  string `yaml:"voice"`
+	Avatar string `yaml:"avatar"`
 }
 
 type GatewayConfig struct {
