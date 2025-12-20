@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import BubbleNode from './BubbleNode.vue'
 import StarDustLayer from './StarDustLayer.vue'
 
@@ -28,6 +28,13 @@ const universe = reactive({
   dragId: null,
   hoverId: null,
 })
+
+// Watch for bubbles data changes to re-initialize simulation
+watch(() => props.bubbles, (newVal) => {
+  if (newVal && newVal.length > 0 && universe.width > 0) {
+    initBubbles()
+  }
+}, { deep: true })
 
 const initBubbles = () => {
   const count = props.bubbles.length

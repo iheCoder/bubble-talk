@@ -2,15 +2,109 @@
   {
     "entry_id": "econ_weekend_overtime",
     "domain": "economics",
-    "title": "周末加班到底值不值？",
+    "title": "周末加班值不值？",
+    "subtitle": "机会成本藏在时间里",
     "hook": "你以为赚了800，可能亏了更贵的东西。",
-    "primary_concept_id": "econ_opportunity_cost"
+    "primary_concept_id": "econ_opportunity_cost",
+    "tag": "经济",
+    "description": "时间是一种资产，它的代价常常被低估。",
+    "keywords": ["机会成本", "价值选择", "隐性代价"],
+    "color": "rgba(88, 214, 255, 0.7)"
   },
   {
-    "entry_id": "prog_cache_miss",
-    "domain": "programming",
-    "title": "为什么缓存命中率高，P99 还是爆？",
-    "hook": "你以为是缓存，其实是队列和抖动。",
-    "primary_concept_id": "prog_tail_latency"
+    "entry_id": "learn_forgetting_curve",
+    "domain": "learning",
+    "title": "为什么你学了又忘？",
+    "subtitle": "遗忘曲线与间隔重复",
+    "hook": "记忆不是一次性写入，而是被安排复习。",
+    "primary_concept_id": "learn_spaced_repetition",
+    "tag": "学习",
+    "description": "记忆不是一次性写入，而是被安排复习。",
+    "keywords": ["遗忘曲线", "间隔重复", "巩固"],
+    "color": "rgba(124, 255, 219, 0.7)"
+  },
+  {
+    "entry_id": "behav_veblen_effect",
+    "domain": "behavioral",
+    "title": "价格涨了你反而买更多？",
+    "subtitle": "韦伯伦效应的暗号",
+    "hook": "有些商品卖的不是性价比，而是信号。",
+    "primary_concept_id": "behav_signaling",
+    "tag": "行为",
+    "description": "有些商品卖的不是性价比，而是信号。",
+    "keywords": ["韦伯伦", "炫耀性消费", "身份信号"],
+    "color": "rgba(255, 196, 110, 0.7)"
+  },
+  {
+    "entry_id": "psych_anxiety_reappraisal",
+    "domain": "psychology",
+    "title": "如何从容面对考试焦虑？",
+    "subtitle": "认知重评的微光",
+    "hook": "焦虑不一定是敌人，它也可以是灯。",
+    "primary_concept_id": "psych_cognitive_reappraisal",
+    "tag": "心理",
+    "description": "焦虑不一定是敌人，它也可以是灯。",
+    "keywords": ["认知重评", "压力曲线", "自我对话"],
+    "color": "rgba(155, 166, 255, 0.7)"
+  },
+  {
+    "entry_id": "prod_implementation_intention",
+    "domain": "productivity",
+    "title": "为什么计划总被打乱？",
+    "subtitle": "执行意图的设计",
+    "hook": "计划需要被“绑定”，才能抵抗日常噪声。",
+    "primary_concept_id": "prod_if_then",
+    "tag": "效率",
+    "description": "计划需要被“绑定”，才能抵抗日常噪声。",
+    "keywords": ["执行意图", "触发器", "可执行"],
+    "color": "rgba(118, 245, 169, 0.7)"
+  },
+  {
+    "entry_id": "psych_ego_depletion",
+    "domain": "psychology",
+    "title": "自控力耗尽是真的吗？",
+    "subtitle": "意志的补给线",
+    "hook": "自控像肌肉，但也受环境与动机影响。",
+    "primary_concept_id": "psych_willpower",
+    "tag": "心理",
+    "description": "自控像肌肉，但也受环境与动机影响。",
+    "keywords": ["自控力", "动机", "补给"],
+    "color": "rgba(255, 168, 209, 0.7)"
+  },
+  {
+    "entry_id": "econ_hyperbolic_discounting",
+    "domain": "economics",
+    "title": "为什么会冲动消费？",
+    "subtitle": "即时奖励的幻象",
+    "hook": "奖励被提前了，后果被延迟了。",
+    "primary_concept_id": "econ_time_preference",
+    "tag": "经济",
+    "description": "奖励被提前了，后果被延迟了。",
+    "keywords": ["即时奖励", "延迟满足", "情绪"],
+    "color": "rgba(138, 220, 255, 0.7)"
+  },
+  {
+    "entry_id": "method_correlation_causation",
+    "domain": "methodology",
+    "title": "你真的理解因果吗？",
+    "subtitle": "相关不等于因果",
+    "hook": "看见相关，不代表看见机制。",
+    "primary_concept_id": "method_causal_inference",
+    "tag": "方法",
+    "description": "看见相关，不代表看见机制。",
+    "keywords": ["因果", "变量", "实验"],
+    "color": "rgba(197, 255, 161, 0.7)"
+  },
+  {
+    "entry_id": "comm_question_framework",
+    "domain": "communication",
+    "title": "工作中如何提出好问题？",
+    "subtitle": "提问框架的力量",
+    "hook": "好问题比好答案更稀缺。",
+    "primary_concept_id": "comm_socratic",
+    "tag": "沟通",
+    "description": "好问题比好答案更稀缺。",
+    "keywords": ["提问", "框架", "引导"],
+    "color": "rgba(255, 212, 148, 0.7)"
   }
 ]

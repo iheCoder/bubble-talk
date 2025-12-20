@@ -392,11 +392,11 @@ onBeforeUnmount(() => {
                 <span class="tool-icon">⚡️</span>
                 <span class="tool-title">快速检验</span>
               </div>
-              <div class="quiz-content">
-                <div class="quiz-question">以下哪一个最像机会成本？</div>
+              <div class="quiz-content" v-if="diagnose && diagnose.questions && diagnose.questions.length > 0">
+                <div class="quiz-question">{{ diagnose.questions[0].prompt }}</div>
                 <div class="quiz-options">
                   <button
-                    v-for="(opt, idx) in ['看电影花的50元', '看电影花掉的2小时', '看电影时买的爆米花']"
+                    v-for="(opt, idx) in diagnose.questions[0].options"
                     :key="idx"
                     class="quiz-option"
                     :class="{ 'selected': selectedOption === idx }"
@@ -405,6 +405,9 @@ onBeforeUnmount(() => {
                     {{ opt }}
                   </button>
                 </div>
+              </div>
+              <div class="quiz-content" v-else>
+                <div class="quiz-question">加载题目中...</div>
               </div>
             </div>
           </transition>

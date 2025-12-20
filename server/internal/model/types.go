@@ -4,11 +4,16 @@ import "time"
 
 // Bubble 定义了一个对话泡泡的基本信息。
 type Bubble struct {
-	EntryID          string `json:"entry_id"`
-	Domain           string `json:"domain"`
-	Title            string `json:"title"`
-	Hook             string `json:"hook"`
-	PrimaryConceptID string `json:"primary_concept_id"`
+	EntryID          string   `json:"entry_id"`
+	Domain           string   `json:"domain"`
+	Title            string   `json:"title"`
+	Subtitle         string   `json:"subtitle"`
+	Hook             string   `json:"hook"`
+	PrimaryConceptID string   `json:"primary_concept_id"`
+	Tag              string   `json:"tag"`
+	Description      string   `json:"description"`
+	Keywords         []string `json:"keywords"`
+	Color            string   `json:"color"`
 }
 
 // Turn 表示对话中的一个轮次。

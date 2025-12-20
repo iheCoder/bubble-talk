@@ -10,7 +10,11 @@ import (
 )
 
 // Orchestrator 负责处理会话事件的编排逻辑。
-// 职责：执行 append-first 流水线，保证事件可回放、状态可重建。
+//
+// 职责与契约：
+// - append-first：任何输入先写 Timeline，再做 reduce，保证可回放与幂等。
+// - 决策集中：Director/Actor/Assessment 的裁决都应在此触发，避免分散到网关/前端。
+// - 输出可审计：助手输出与计划要写回 Timeline，以便验收/复盘。
 type Orchestrator struct {
 	store    session.Store
 	timeline timeline.Store
@@ -29,7 +33,11 @@ func New(store session.Store, timeline timeline.Store, now func() time.Time) *Or
 }
 
 // OnEvent 处理来自用户或系统的事件，更新会话状态并生成响应。
-// 副作用：写入 Timeline 与 Session 快照，确保“说过的话都有迹可循”。
+//
+// 副作用说明：
+// - 追加事实事件到 Timeline（append-first）。
+// - 归约并更新 Session 快照（便于后续增量处理）。
+// - 写入 director_plan 与 assistant_text，作为可审计的输出事实。
 func (o *Orchestrator) OnEvent(ctx context.Context, sessionID string, evt model.Event) (*model.EventResponse, error) {
 	state, err := o.store.Get(ctx, sessionID)
 	if err != nil {
@@ -50,7 +58,8 @@ func (o *Orchestrator) OnEvent(ctx context.Context, sessionID string, evt model.
 		return nil, err
 	}
 
-	// 第一阶段：导演计划与演员输出先用 stub，确保编排流水线可验收。
+	// 第一阶段：DirectorPlan 与 Actor 输出先用 stub，确保编排流水线可验收。
+	// 后续接入 ActorEngine 时，这里应返回 ActorReply，而不是简单的 Assistant 文本。
 	plan := model.DirectorPlan{
 		UserMindState:     []string{"Partial"},
 		Intent:            "Clarify",
@@ -73,6 +82,7 @@ func (o *Orchestrator) OnEvent(ctx context.Context, sessionID string, evt model.
 		return nil, err
 	}
 
+	// 临时台词：用于验证“事件流 + 语音播报”闭环。
 	assistantText := "收到。先用一句话复述你的理解，我们再往下走。"
 	assistantEvent := model.Event{
 		Type:     "assistant_text",
