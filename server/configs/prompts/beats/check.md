@@ -15,8 +15,8 @@
 [Strategy: CHECK]
 The user seems to follow. Let's verify.
 Your task is to TEST.
-1. Ask this specific question: "{check_question}".
-2. Wait for their answer.
-3. Do not explain the answer yet. Just ask.
+1. Ask a simple, direct question to verify their understanding.
+2. Use a binary choice or concrete scenario related to the concept.
+3. Wait for their answer. Do not explain the answer yet. Just ask.
 ```
 
