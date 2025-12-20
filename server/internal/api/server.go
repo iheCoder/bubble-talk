@@ -1,41 +1,46 @@
 package api
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"bubble-talk/server/internal/domain"
 	"bubble-talk/server/internal/model"
+	"bubble-talk/server/internal/orchestrator"
 	"bubble-talk/server/internal/realtime"
 	"bubble-talk/server/internal/session"
+	"bubble-talk/server/internal/timeline"
+
+	"github.com/gin-gonic/gin"
 )
 
 type Server struct {
-	store   session.Store
-	bubbles []model.Bubble
-	now     func() time.Time
+	store        session.Store
+	timeline     timeline.Store
+	bubbles      []model.Bubble
+	now          func() time.Time
+	orchestrator *orchestrator.Orchestrator
 
 	// realtimeClient 只用于签发 OpenAI Realtime 的 ephemeral key，
 	// 让浏览器用 WebRTC 直连 OpenAI（语音原生），同时不暴露服务端 API Key。
 	realtimeClient *realtime.Client
 }
 
-func NewServer(store session.Store, bubblesPath string) (*Server, error) {
+func NewServer(store session.Store, timeline timeline.Store, bubblesPath string) (*Server, error) {
 	bubbles, err := domain.LoadBubbles(bubblesPath)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Server{
-		store:   store,
-		bubbles: bubbles,
-		now:     time.Now,
+		store:        store,
+		timeline:     timeline,
+		bubbles:      bubbles,
+		now:          time.Now,
+		orchestrator: orchestrator.New(store, timeline, time.Now),
 		realtimeClient: &realtime.Client{
 			APIKey: os.Getenv("OPENAI_API_KEY"),
 		},
@@ -43,34 +48,25 @@ func NewServer(store session.Store, bubblesPath string) (*Server, error) {
 }
 
 func (s *Server) Routes() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.HandleFunc("/api/bubbles", s.handleBubbles)
-	mux.HandleFunc("/api/sessions", s.handleSessions)
-	mux.HandleFunc("/api/sessions/", s.handleSessionSubroutes)
-
-	// 开发期方便前端本地起 Vite（5173）直连后端。
-	// 线上建议用反向代理统一域名，并收紧 CORS。
-	return withCORS(mux)
+	// Gin 统一承载中间件与路由，便于扩展日志/鉴权/限流等能力。
+	engine := gin.New()
+	engine.Use(gin.Logger(), gin.Recovery(), s.corsMiddleware())
+	engine.GET("/healthz", s.handleHealthz)
+	engine.GET("/api/bubbles", s.handleBubbles)
+	engine.POST("/api/sessions", s.handleSessions)
+	engine.POST("/api/sessions/:id/events", s.handleSessionEvents)
+	engine.POST("/api/sessions/:id/realtime/token", s.handleRealtimeToken)
+	return engine
 }
 
 // handleHealthz 返回服务健康状态。
-func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+func (s *Server) handleHealthz(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// handleBubbles 返回所有可用的泡泡
-func (s *Server) handleBubbles(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, s.bubbles)
+// handleBubbles 返回所有可用的泡泡。
+func (s *Server) handleBubbles(c *gin.Context) {
+	c.JSON(http.StatusOK, s.bubbles)
 }
 
 type createSessionRequest struct {
@@ -78,26 +74,21 @@ type createSessionRequest struct {
 }
 
 // handleSessions 处理 /api/sessions 路由，支持创建新 Session。
-func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
+func (s *Server) handleSessions(c *gin.Context) {
 	var req createSessionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 		return
 	}
 
 	if req.EntryID == "" {
-		writeError(w, http.StatusBadRequest, "entry_id required")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "entry_id required"})
 		return
 	}
 
 	bubble, ok := findBubble(s.bubbles, req.EntryID)
 	if !ok {
-		writeError(w, http.StatusNotFound, "entry_id not found")
+		c.JSON(http.StatusNotFound, gin.H{"error": "entry_id not found"})
 		return
 	}
 
@@ -121,8 +112,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		MisconceptionTags: nil,
 	}
 
-	if err := s.store.Save(r.Context(), &state); err != nil {
-		writeError(w, http.StatusInternalServerError, "save session failed")
+	// 副作用：创建快照以便后续 reducer 增量归约。
+	if err := s.store.Save(c.Request.Context(), &state); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "save session failed"})
 		return
 	}
 
@@ -131,121 +123,30 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		State:     state,
 		Diagnose:  defaultDiagnose(),
 	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-// handleSessionSubroutes 处理 /api/sessions/{id}/... 的子路由。
-func (s *Server) handleSessionSubroutes(w http.ResponseWriter, r *http.Request) {
-	// 支持两类子路由：
-	// - /api/sessions/{id}/events          ：兼容纯文本/测试环境的事件入口
-	// - /api/sessions/{id}/realtime/token  ：签发 OpenAI Realtime ephemeral key（WebRTC 直连）
-
-	path, ok := strings.CutPrefix(r.URL.Path, "/api/sessions/")
-	if !ok || path == "" {
-		writeError(w, http.StatusNotFound, "session not found")
-		return
-	}
-
-	// 期望 path 形如：{id}/events 或 {id}/realtime/token
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 2 {
-		writeError(w, http.StatusNotFound, "session not found")
-		return
-	}
-	id := parts[0]
-	tail := strings.Join(parts[1:], "/")
-
-	switch {
-	case tail == "events":
-		s.handleSessionEvents(w, r, id)
-		return
-	case tail == "realtime/token":
-		s.handleRealtimeToken(w, r, id)
-		return
-	default:
-		writeError(w, http.StatusNotFound, "not found")
-		return
-	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // handleSessionEvents 处理 /api/sessions/{id}/events 路由，接收用户事件。
-func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+func (s *Server) handleSessionEvents(c *gin.Context) {
+	var evt model.Event
+	if err := c.ShouldBindJSON(&evt); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 		return
 	}
 
-	state, err := s.store.Get(r.Context(), id)
+	sessionID := c.Param("id")
+	// 这里将事件交给编排器，确保走 append-first 与快照归约。
+	resp, err := s.orchestrator.OnEvent(c.Request.Context(), sessionID, evt)
 	if err != nil {
-		if errors.Is(err, session.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "session not found")
+		if err == session.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "load session failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "handle event failed"})
 		return
 	}
 
-	var evt model.Event
-	if err := json.NewDecoder(r.Body).Decode(&evt); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-
-	now := s.now()
-	if !state.LastOutputAt.IsZero() {
-		state.OutputClockSec = int(now.Sub(state.LastOutputAt).Seconds())
-	}
-	state.Signals.LastUserChars = len(evt.Text)
-
-	if evt.ClientTS.IsZero() {
-		evt.ClientTS = now
-	}
-	state.Turns = append(state.Turns, model.Turn{
-		Role: "user",
-		Text: evt.Text,
-		TS:   evt.ClientTS,
-	})
-
-	plan := model.DirectorPlan{
-		UserMindState:     []string{"Partial"},
-		Intent:            "Clarify",
-		NextBeat:          "Check",
-		NextRole:          "Coach",
-		OutputAction:      "Recap",
-		TalkBurstLimitSec: 20,
-		TensionGoal:       "keep",
-		LoadGoal:          "keep",
-		StackAction:       "keep",
-		Notes:             "stub plan for stage-1",
-	}
-
-	assistantText := "收到。先用一句话复述你的理解，我们再往下走。"
-	state.Turns = append(state.Turns, model.Turn{
-		Role: "assistant",
-		Text: assistantText,
-		TS:   now,
-	})
-	state.OutputClockSec = 0
-	state.LastOutputAt = now
-
-	if err := s.store.Save(r.Context(), state); err != nil {
-		writeError(w, http.StatusInternalServerError, "save session failed")
-		return
-	}
-
-	resp := model.EventResponse{
-		Assistant: model.AssistantMessage{
-			Text: assistantText,
-			NeedUserAction: &model.UserAction{
-				Type:   "recap",
-				Prompt: "用一句话复述，必须包含因为…所以…",
-			},
-			Quiz: nil,
-		},
-		Debug: &model.DebugPayload{DirectorPlan: plan},
-	}
-
-	writeJSON(w, http.StatusOK, resp)
+	c.JSON(http.StatusOK, resp)
 }
 
 type realtimeTokenResponse struct {
@@ -260,19 +161,15 @@ type realtimeTokenResponse struct {
 }
 
 // handleRealtimeToken 处理 /api/sessions/{id}/realtime/token 路由，签发 Realtime ephemeral key。
-func (s *Server) handleRealtimeToken(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	state, err := s.store.Get(r.Context(), id)
+func (s *Server) handleRealtimeToken(c *gin.Context) {
+	id := c.Param("id")
+	state, err := s.store.Get(c.Request.Context(), id)
 	if err != nil {
-		if errors.Is(err, session.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "session not found")
+		if err == session.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "load session failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "load session failed"})
 		return
 	}
 
@@ -297,7 +194,7 @@ func (s *Server) handleRealtimeToken(w http.ResponseWriter, r *http.Request, id 
 		state.MainObjective,
 	)
 
-	keyResp, err := s.realtimeClient.CreateEphemeralKey(r.Context(), realtime.CreateSessionRequest{
+	keyResp, err := s.realtimeClient.CreateEphemeralKey(c.Request.Context(), realtime.CreateSessionRequest{
 		Model:        modelName,
 		Voice:        voice,
 		Instructions: instructions,
@@ -305,27 +202,17 @@ func (s *Server) handleRealtimeToken(w http.ResponseWriter, r *http.Request, id 
 	if err != nil {
 		// 这里记录详细错误到服务端日志，返回给前端的错误保持简洁，避免误泄漏信息。
 		log.Printf("create realtime token failed: %v", err)
-		writeError(w, http.StatusInternalServerError, "create realtime token failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "create realtime token failed"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, realtimeTokenResponse{
+	c.JSON(http.StatusOK, realtimeTokenResponse{
 		Model:        modelName,
 		Voice:        voice,
 		EphemeralKey: keyResp.ClientSecret.Value,
 		ExpiresAt:    keyResp.ClientSecret.ExpiresAt,
 		Instructions: instructions,
 	})
-}
-
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
 }
 
 func findBubble(bubbles []model.Bubble, entryID string) (model.Bubble, bool) {
@@ -359,21 +246,21 @@ func newSessionID() string {
 	return fmt.Sprintf("S_%d", now)
 }
 
-func withCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
+func (s *Server) corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
 		// 开发期：允许本地 Vite；线上应改为白名单或同源。
 		if origin == "http://localhost:5173" || origin == "http://127.0.0.1:5173" {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Vary", "Origin")
+			c.Header("Access-Control-Allow-Credentials", "true")
+			c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		}
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
-		next.ServeHTTP(w, r)
-	})
+		c.Next()
+	}
 }

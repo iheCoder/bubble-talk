@@ -7,6 +7,7 @@ import (
 
 	"bubble-talk/server/internal/api"
 	"bubble-talk/server/internal/session"
+	"bubble-talk/server/internal/timeline"
 )
 
 func main() {
@@ -18,7 +19,8 @@ func main() {
 	flag.Parse()
 
 	store := session.NewInMemoryStore()
-	server, err := api.NewServer(store, *bubblesPath)
+	timelineStore := timeline.NewInMemoryStore()
+	server, err := api.NewServer(store, timelineStore, *bubblesPath)
 	if err != nil {
 		log.Fatalf("init server: %v", err)
 	}
