@@ -32,6 +32,17 @@ func New(store session.Store, timeline timeline.Store, now func() time.Time) *Or
 	}
 }
 
+// GetInitialInstructions 生成会话初始的 System Instructions。
+// 这是 ActorEngine 的一部分职责，用于初始化 GPT Realtime 的人设和目标。
+func (o *Orchestrator) GetInitialInstructions(state *model.SessionState) string {
+	// TODO: 这里应该调用 ActorEngine 的 PromptBuilder
+	// 目前先硬编码，但结构上已经解耦
+	return "你是 BubbleTalk 的语音教学助手。默认用中文、口语化、短句输出。" +
+		"本次泡泡主题：" + state.EntryID + "。当前主目标：" + state.MainObjective + "。" +
+		"对话规则：每 90 秒必须让用户完成一次输出动作（复述/选择/举例/迁移）。" +
+		"如果用户说“我懂了/结束”，必须立刻给出迁移检验（Exit Ticket）。"
+}
+
 // OnEvent 处理来自用户或系统的事件，更新会话状态并生成响应。
 //
 // 副作用说明：
