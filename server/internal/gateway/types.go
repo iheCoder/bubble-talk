@@ -20,6 +20,7 @@ const (
 	EventTypeQuizAnswer    EventType = "quiz_answer"    // 答题
 	EventTypeBargeIn       EventType = "barge_in"       // 插话中断
 	EventTypeExitRequested EventType = "exit_requested" // 退出请求
+	EventTypeWorldEntered  EventType = "world_entered"  // 进入World，触发导演主动开场
 
 	// 系统/导演事件
 	EventTypeDirectorPlan  EventType = "director_plan"  // 导演计划（内部）

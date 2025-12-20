@@ -313,6 +313,9 @@ func (s *Server) handleGatewayEvent(ctx context.Context, sessionID string, gw *g
 		}
 		// TODO: 触发 EXIT_TICKET 流程
 		return nil
+	case gateway.EventTypeWorldEntered:
+		// World 进入，导演主动开场
+		return s.orchestrator.HandleWorldEntered(ctx, sessionID, gw)
 
 	default:
 		log.Printf("[API] unhandled gateway event type: %s", msg.Type)

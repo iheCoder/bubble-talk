@@ -107,7 +107,7 @@ const roles = computed(() => {
 })
 
 const activeRole = ref('host')
-const isThinking = ref(true)
+const isThinking = ref(false)
 const toolState = ref('hidden')
 const selectedOption = ref(null)
 const input = ref('')
@@ -120,7 +120,9 @@ const currentSpeech = ref({
   user: null
 })
 const isMicActive = ref(false) // 初始为 false，连接后才启用
-const isMuted = ref(false)
+const isMuted = ref(true)
+const isAssistantSpeaking = ref(false)
+const hasSentIntro = ref(false)
 
 // WebSocket Gateway 相关
 const gateway = ref(null)
@@ -207,15 +209,13 @@ const connect = async () => {
         }
       }
 
-      // 连接成功后，显示欢迎消息
-      addMessage('system', '🎙️ 语音连接已建立，你可以开始说话了！例如："我想了解一下这个话题"')
-
-      // 注意：不再调用 playSequence()，因为那是模拟的硬编码对话
-      // 真正的对话会在用户说话后，由后端 Director/Actor 生成并通过 TTS 播放
+      // 进入 World 后，导演先主动开场
+      requestDirectorIntro()
     }
 
     gateway.value.onDisconnected = () => {
       isConnected.value = false
+      isAssistantSpeaking.value = false
       console.log('[WorldView] Gateway 断开')
     }
 
@@ -235,11 +235,14 @@ const connect = async () => {
 
     // TTS 开始 - AI 开始说话
     gateway.value.onTTSStarted = () => {
+      isAssistantSpeaking.value = true
+      isThinking.value = false
       console.log('[WorldView] 🔊 AI 开始说话')
     }
 
     // TTS 完成
     gateway.value.onTTSCompleted = () => {
+      isAssistantSpeaking.value = false
       console.log('[WorldView] ✅ AI 说话完成')
     }
 
@@ -258,6 +261,7 @@ const connect = async () => {
 
       // 显示对话气泡
       activeRole.value = role
+      isThinking.value = false
       pushMessage(role, text)
 
       // 记录到转写历史
@@ -290,6 +294,9 @@ const connect = async () => {
 
 const disconnect = () => {
   isMicActive.value = false
+  isAssistantSpeaking.value = false
+  isThinking.value = false
+  hasSentIntro.value = false
   if (gateway.value) {
     gateway.value.stopRecording()
     gateway.value.disconnect()
@@ -323,52 +330,10 @@ const pushMessage = (role, text) => {
   }, duration + 1000)
 }
 
-// 辅助函数：添加系统消息
-const addMessage = (role, text) => {
-  pushMessage(role, text)
-}
-
 const schedule = (fn, delay) => {
   const id = window.setTimeout(fn, delay)
   timers.push(id)
   return id
-}
-
-const playSequence = () => {
-  const expert = getExpertRole(props.bubble?.tag)
-  const expertId = expert.id
-
-  // Dynamic script generation based on bubble content
-  // In a real app, this would come from an API
-  const steps = [
-    {
-      role: 'host',
-      text: `欢迎来到泡泡课堂。今天我们聊聊“${props.bubble?.title || '这个话题'}”。`,
-      pause: 3000,
-    },
-    {
-      role: expertId,
-      text: props.bubble?.detail || '这是一个非常值得探讨的问题，因为它触及了我们认知的盲区。',
-      pause: 3000,
-    },
-  ]
-
-  const runStep = (index) => {
-    if (index >= steps.length) return
-    const step = steps[index]
-    activeRole.value = step.role
-    isThinking.value = true
-
-    // Simulate "thinking" before speaking
-    schedule(() => {
-      isThinking.value = false
-      pushMessage(step.role, step.text)
-      if (step.after) step.after()
-      schedule(() => runStep(index + 1), step.pause)
-    }, 650)
-  }
-
-  runStep(0)
 }
 
 const handleSend = () => {
@@ -377,13 +342,27 @@ const handleSend = () => {
   input.value = ''
 }
 
+const requestDirectorIntro = () => {
+  if (!gateway.value || hasSentIntro.value) return
+  hasSentIntro.value = true
+  isThinking.value = true
+  gateway.value.sendWorldEntered({
+    bubble_title: props.bubble?.title || '',
+    bubble_tag: props.bubble?.tag || '',
+  })
+}
+
 const toggleMute = () => {
   isMuted.value = !isMuted.value
   if (gateway.value) {
     if (isMuted.value) {
       gateway.value.stopRecording()
+      isMicActive.value = false
     } else if (isMicActive.value) {
       gateway.value.startRecording()
+    } else if (isConnected.value) {
+      gateway.value.startRecording()
+      isMicActive.value = true
     }
   }
 }
@@ -394,13 +373,17 @@ const handleDisconnect = () => {
 
 
 onMounted(() => {
-  playSequence()
+  connect()
 })
 
 // Watch for bubble changes to restart sequence if needed (though usually component is remounted)
 watch(() => props.bubble, () => {
   timers.forEach((id) => window.clearTimeout(id))
-  playSequence()
+  currentSpeech.value = { host: null, expert: null, user: null }
+  hasSentIntro.value = false
+  if (isConnected.value) {
+    requestDirectorIntro()
+  }
 })
 
 onBeforeUnmount(() => {
@@ -420,8 +403,8 @@ onBeforeUnmount(() => {
           </svg>
         </button>
         <div class="world-title">
-          <h1>周末加班值不值？</h1>
-          <span class="world-tag">经济学 · 机会成本</span>
+          <h1>{{ props.bubble?.title || '今日话题' }}</h1>
+          <span class="world-tag">{{ props.bubble?.tag || '主题' }} · {{ expertRole.tag }}</span>
         </div>
       </div>
 
@@ -491,10 +474,12 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Host Position (Top Left) -->
-        <div class="seat seat--host" :class="{ 'is-speaking': activeRole === 'host' && (isThinking || currentSpeech.host) }">
-        <div class="avatar-container">
+      <div class="seat seat--host" :class="{ 'is-speaking': activeRole === 'host' && (isAssistantSpeaking || currentSpeech.host) }">
+        <div class="avatar-container" :style="{ '--role-color': roleMap['host'].color }">
           <div class="avatar-halo"></div>
-          <div class="avatar-circle" :style="{ '--role-color': roleMap['host'].color }">
+          <div class="avatar-ripple"></div>
+          <div class="avatar-ripple avatar-ripple--delay"></div>
+          <div class="avatar-circle">
             {{ roleMap['host'].avatar }}
           </div>
           <div class="role-label">{{ roleMap['host'].name }}</div>
@@ -510,10 +495,12 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- Expert Position (Top Right) -->
-      <div class="seat seat--economist" :class="{ 'is-speaking': activeRole === expertRole.id && (isThinking || currentSpeech[expertRole.id]) }">
-        <div class="avatar-container">
+      <div class="seat seat--economist" :class="{ 'is-speaking': activeRole === expertRole.id && (isAssistantSpeaking || currentSpeech[expertRole.id]) }">
+        <div class="avatar-container" :style="{ '--role-color': expertRole.color }">
           <div class="avatar-halo"></div>
-          <div class="avatar-circle" :style="{ '--role-color': expertRole.color }">
+          <div class="avatar-ripple"></div>
+          <div class="avatar-ripple avatar-ripple--delay"></div>
+          <div class="avatar-circle">
             {{ expertRole.avatar }}
           </div>
           <div class="role-label">{{ expertRole.name }}</div>
@@ -536,9 +523,10 @@ onBeforeUnmount(() => {
           </div>
         </transition>
 
-        <div class="user-avatar-area">
+         <div class="user-avatar-area">
            <div class="user-avatar-wrapper">
              <div class="user-avatar-ring" :class="{ 'is-active': !isMuted && isMicActive }"></div>
+             <div class="user-avatar-wave" :class="{ 'is-active': !!currentSpeech.user }"></div>
              <div class="user-avatar">
                <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix" alt="User Avatar" />
              </div>
@@ -840,6 +828,28 @@ onBeforeUnmount(() => {
   justify-content: center;
 }
 
+.avatar-ripple {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid var(--role-color);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.85);
+  z-index: 0;
+  filter: drop-shadow(0 0 12px rgba(255, 255, 255, 0.12));
+}
+
+.avatar-ripple--delay {
+  animation-delay: 0.6s;
+}
+
+.seat.is-speaking .avatar-ripple {
+  animation: ripple-wave 1.8s infinite ease-out;
+}
+
 .avatar-circle {
   width: 64px;
   height: 64px;
@@ -882,6 +892,12 @@ onBeforeUnmount(() => {
 @keyframes pulse-halo {
   0% { width: 100%; height: 100%; opacity: 0.8; }
   100% { width: 160%; height: 160%; opacity: 0; }
+}
+
+@keyframes ripple-wave {
+  0% { transform: translate(-50%, -50%) scale(0.85); opacity: 0.7; }
+  70% { opacity: 0.25; }
+  100% { transform: translate(-50%, -50%) scale(1.65); opacity: 0; }
 }
 
 .role-label {
@@ -1099,6 +1115,25 @@ onBeforeUnmount(() => {
 .user-avatar-ring.is-active {
   opacity: 0.6;
   animation: pulse-ring 1.5s infinite;
+}
+
+.user-avatar-wave {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 199, 140, 0.7);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.9);
+  transition: opacity 0.2s;
+  z-index: 1;
+}
+
+.user-avatar-wave.is-active {
+  opacity: 0.6;
+  animation: ripple-wave 1.7s infinite ease-out;
 }
 
 @keyframes pulse-ring {

@@ -332,6 +332,26 @@ export class BubbleTalkGateway {
   }
 
   /**
+   * 通知服务端：World 已进入，导演可以主动开场
+   */
+  sendWorldEntered(metadata = {}) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.error('[Gateway] WebSocket not connected');
+      return;
+    }
+
+    const message = {
+      type: 'world_entered',
+      event_id: `evt_${Date.now()}`,
+      metadata,
+      client_ts: new Date().toISOString()
+    };
+
+    console.log('[Gateway] Sending world_entered:', message);
+    this.ws.send(JSON.stringify(message));
+  }
+
+  /**
    * 断开连接
    */
   disconnect() {

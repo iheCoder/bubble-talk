@@ -140,41 +140,12 @@ func (o *Orchestrator) HandleUserUtterance(ctx context.Context, sessionID string
 		plan.NextRole, plan.NextBeat, plan.OutputAction)
 
 	// 4. 记录Director计划到Timeline
-	planEvent := &model.Event{
-		EventID:      fmt.Sprintf("evt_%d", o.now().UnixNano()),
-		SessionID:    sessionID,
-		Type:         "director_plan",
-		ServerTS:     o.now(),
-		DirectorPlan: &plan,
-	}
-	if _, err := o.timeline.Append(ctx, sessionID, planEvent); err != nil {
+	if err := o.appendDirectorPlan(ctx, sessionID, plan); err != nil {
 		o.logger.Printf("Failed to append plan event: %v", err)
 	}
 
 	// 5. 调用Actor生成Prompt
-	req := actor.ActorRequest{
-		SessionID:     sessionID,
-		TurnID:        event.EventID,
-		Plan:          plan,
-		EntryID:       state.EntryID,
-		Domain:        state.Domain,
-		MainObjective: state.MainObjective,
-		ConceptName:   state.MainObjective,
-		LastUserText:  text,
-		Metaphor:      "", // TODO: 从ConceptPack获取
-	}
-
-	prompt, err := o.actorEngine.BuildPrompt(req)
-	if err != nil {
-		o.logger.Printf("Failed to build prompt: %v", err)
-		prompt = o.actorEngine.BuildFallbackPrompt(req)
-	}
-
-	// 校验Prompt
-	if err := o.actorEngine.Validate(prompt); err != nil {
-		o.logger.Printf("Prompt validation failed: %v, using fallback", err)
-		prompt = o.actorEngine.BuildFallbackPrompt(req)
-	}
+	prompt := o.buildActorPrompt(state, plan, event.EventID, text)
 
 	o.logger.Printf("[Orchestrator] Actor prompt generated, length=%d", len(prompt.Instructions))
 
@@ -242,6 +213,91 @@ func (o *Orchestrator) HandleBargeIn(ctx context.Context, sessionID string) erro
 	// TODO: 更新会话状态（记录中断次数，调整紧张度）
 
 	return nil
+}
+
+// HandleWorldEntered 处理进入 World 的事件，导演主动开场。
+func (o *Orchestrator) HandleWorldEntered(ctx context.Context, sessionID string, gw *gateway.Gateway) error {
+	o.logger.Printf("[Orchestrator] world entered: session=%s", sessionID)
+
+	state, err := o.store.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+
+	eventID := fmt.Sprintf("evt_%d", o.now().UnixNano())
+	event := &model.Event{
+		EventID:   eventID,
+		SessionID: sessionID,
+		Type:      "world_entered",
+		ClientTS:  o.now(),
+		ServerTS:  o.now(),
+	}
+	if _, err := o.timeline.Append(ctx, sessionID, event); err != nil {
+		o.logger.Printf("Failed to append world_entered event: %v", err)
+	}
+
+	plan := o.directorEngine.Decide(state, "")
+	if err := o.appendDirectorPlan(ctx, sessionID, plan); err != nil {
+		o.logger.Printf("Failed to append plan event: %v", err)
+	}
+
+	prompt := o.buildActorPrompt(state, plan, eventID, "")
+
+	if gw != nil {
+		if err := gw.SendInstructions(ctx, prompt.Instructions, prompt.DebugInfo); err != nil {
+			return fmt.Errorf("send instructions: %w", err)
+		}
+		o.logger.Printf("[Orchestrator] Intro instructions sent successfully")
+	}
+
+	state.UpdatedAt = o.now()
+	if err := o.store.Save(ctx, state); err != nil {
+		o.logger.Printf("Failed to update session: %v", err)
+	}
+
+	return nil
+}
+
+func (o *Orchestrator) appendDirectorPlan(ctx context.Context, sessionID string, plan model.DirectorPlan) error {
+	planEvent := &model.Event{
+		EventID:      fmt.Sprintf("evt_%d", o.now().UnixNano()),
+		SessionID:    sessionID,
+		Type:         "director_plan",
+		ServerTS:     o.now(),
+		DirectorPlan: &plan,
+	}
+	_, err := o.timeline.Append(ctx, sessionID, planEvent)
+	return err
+}
+
+func (o *Orchestrator) buildActorPrompt(
+	state *model.SessionState,
+	plan model.DirectorPlan,
+	turnID string,
+	lastUserText string,
+) actor.ActorPrompt {
+	req := actor.ActorRequest{
+		SessionID:     state.SessionID,
+		TurnID:        turnID,
+		Plan:          plan,
+		EntryID:       state.EntryID,
+		Domain:        state.Domain,
+		MainObjective: state.MainObjective,
+		ConceptName:   state.MainObjective,
+		LastUserText:  lastUserText,
+		Metaphor:      "", // TODO: 从ConceptPack获取
+	}
+
+	prompt, err := o.actorEngine.BuildPrompt(req)
+	if err != nil {
+		o.logger.Printf("Failed to build prompt: %v", err)
+		prompt = o.actorEngine.BuildFallbackPrompt(req)
+	}
+	if err := o.actorEngine.Validate(prompt); err != nil {
+		o.logger.Printf("Prompt validation failed: %v, using fallback", err)
+		prompt = o.actorEngine.BuildFallbackPrompt(req)
+	}
+	return prompt
 }
 
 // OnEvent 处理来自用户或系统的事件，更新会话状态并生成响应。
