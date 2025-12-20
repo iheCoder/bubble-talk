@@ -82,10 +82,10 @@ export class BubbleTalkGateway {
           if (this.onASRFinal) this.onASRFinal(message.text);
           break;
         case 'tts_started':
-          if (this.onTTSStarted) this.onTTSStarted();
+          if (this.onTTSStarted) this.onTTSStarted(message.metadata);
           break;
         case 'tts_completed':
-          if (this.onTTSCompleted) this.onTTSCompleted();
+          if (this.onTTSCompleted) this.onTTSCompleted(message.metadata);
           break;
         case 'assistant_text':
           console.log('[Gateway] Assistant text:', message.text);
@@ -379,6 +379,8 @@ export class AudioPlayer {
     this.gainNode = null;
     this.nextStartTime = 0;
     this.outputSampleRate = 24000;
+    this.onDrain = null;
+    this._drainTimer = null;
   }
 
   async init() {
@@ -420,10 +422,36 @@ export class AudioPlayer {
       source.start(this.nextStartTime);
       this.nextStartTime += audioBuffer.duration;
 
+      this._scheduleDrainCheck();
       console.log('[AudioPlayer] Playing audio:', audioBuffer.duration, 'seconds');
     } catch (err) {
       console.error('[AudioPlayer] Failed to play audio:', err);
     }
+  }
+
+  _scheduleDrainCheck() {
+    if (!this.audioContext) {
+      return;
+    }
+    if (this._drainTimer) {
+      window.clearTimeout(this._drainTimer);
+      this._drainTimer = null;
+    }
+    const remainingSec = Math.max(0, this.nextStartTime - this.audioContext.currentTime);
+    const delayMs = Math.ceil(remainingSec * 1000) + 30;
+    this._drainTimer = window.setTimeout(() => {
+      if (!this.audioContext) {
+        return;
+      }
+      const stillRemaining = this.nextStartTime - this.audioContext.currentTime;
+      if (stillRemaining > 0.05) {
+        this._scheduleDrainCheck();
+        return;
+      }
+      if (this.onDrain) {
+        this.onDrain();
+      }
+    }, delayMs);
   }
 
   setVolume(volume) {

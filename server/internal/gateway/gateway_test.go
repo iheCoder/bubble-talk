@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -364,13 +365,6 @@ func (m *mockClientConn) close() {
 	m.server.Close()
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // createConnectedPair 创建一对真正连接的 WebSocket 连接
 // 返回：服务端连接（给 Gateway 用）、客户端连接（模拟浏览器）、清理函数
 func createConnectedPair(t *testing.T) (*websocket.Conn, *websocket.Conn, func()) {
@@ -462,6 +456,44 @@ func TestGatewayInitialization(t *testing.T) {
 	}
 
 	t.Log("✓ Gateway初始化成功，已发送session.update")
+}
+
+// TestGatewayConnectRealtimeIntegration 仅在显式设置环境变量时连真实 OpenAI Realtime。
+// 用于定位网络/鉴权/模型配置问题，默认跳过以避免网络依赖。
+func TestGatewayConnectRealtimeIntegration(t *testing.T) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENAI_API_KEY not set")
+	}
+	realtimeURL := os.Getenv("OPENAI_REALTIME_URL")
+	if realtimeURL == "" {
+		model := os.Getenv("OPENAI_REALTIME_MODEL")
+		if model == "" {
+			model = "gpt-realtime"
+		}
+		realtimeURL = fmt.Sprintf("wss://api.openai.com/v1/realtime?model=%s", model)
+	}
+
+	serverConn, _, cleanup := createConnectedPair(t)
+	defer cleanup()
+
+	config := GatewayConfig{
+		OpenAIAPIKey:      apiKey,
+		OpenAIRealtimeURL: realtimeURL,
+		Voice:             "alloy",
+		InputAudioFormat:  "pcm16",
+		OutputAudioFormat: "pcm16",
+		PingInterval:      30 * time.Second,
+	}
+
+	gw := NewGateway("integration-session", serverConn, config)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	if err := gw.Start(ctx); err != nil {
+		t.Fatalf("Failed to connect to OpenAI Realtime: %v", err)
+	}
+	defer gw.Close()
 }
 
 // Test: 音频流转发（客户端→Realtime）

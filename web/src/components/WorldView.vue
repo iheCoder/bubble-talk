@@ -36,7 +36,7 @@ const roles = computed(() => {
       accent: 'rgba(124, 255, 219, 0.35)',
       avatar: 'H',
       avatarImage: hostAvatar,
-      voice: 'Marin',
+      voice: 'marin',
     },
     expert,
     {
@@ -64,7 +64,8 @@ const currentSpeech = ref({
   user: null
 })
 const isMicActive = ref(false) // 初始为 false，连接后才启用
-const isMuted = ref(true)
+// 产品预期：默认进入即“聆听中”，否则用户会误以为系统无响应。
+const isMuted = ref(false)
 const isAssistantSpeaking = ref(false)
 const hasSentIntro = ref(false)
 
@@ -135,6 +136,10 @@ const connect = async () => {
     // 创建 Gateway
     gateway.value = new BubbleTalkGateway(sessionId)
     audioPlayer.value = new AudioPlayer()
+    audioPlayer.value.onDrain = () => {
+      // 以实际音频播放队列耗尽作为“说话结束”，避免 tts_completed(服务端发送完成) 早于前端播放完成。
+      isAssistantSpeaking.value = false
+    }
 
     // 设置事件回调
     gateway.value.onConnected = async () => {
@@ -178,15 +183,18 @@ const connect = async () => {
     }
 
     // TTS 开始 - AI 开始说话
-    gateway.value.onTTSStarted = () => {
+    gateway.value.onTTSStarted = (metadata) => {
       isAssistantSpeaking.value = true
       isThinking.value = false
+      if (metadata?.role) {
+        activeRole.value = metadata.role
+      }
       console.log('[WorldView] 🔊 AI 开始说话')
     }
 
     // TTS 完成
     gateway.value.onTTSCompleted = () => {
-      isAssistantSpeaking.value = false
+      // 注意：这里不直接把 isAssistantSpeaking 置 false，交由 AudioPlayer.onDrain 收口。
       console.log('[WorldView] ✅ AI 说话完成')
     }
 

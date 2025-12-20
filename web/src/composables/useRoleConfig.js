@@ -11,7 +11,7 @@ const ROLE_CONFIG = {
     accent: 'rgba(140, 200, 255, 0.35)',
     avatar: 'E',
     avatarImage: economistAvatar,
-    voice: 'Cedar',
+    voice: 'cedar',
   },
   '心理': {
     id: 'psychologist',
@@ -47,7 +47,7 @@ const ROLE_CONFIG = {
     color: 'rgba(118, 245, 169, 0.7)',
     accent: 'rgba(118, 245, 169, 0.35)',
     avatar: 'PM',
-    voice: 'Marin',
+    voice: 'marin',
   },
   '沟通': {
     id: 'mediator',
@@ -56,7 +56,7 @@ const ROLE_CONFIG = {
     color: 'rgba(255, 212, 148, 0.7)',
     accent: 'rgba(255, 212, 148, 0.35)',
     avatar: 'M',
-    voice: 'Juniper',
+    voice: 'shimmer',
   },
   'default': {
     id: 'expert',
@@ -65,7 +65,7 @@ const ROLE_CONFIG = {
     color: 'rgba(188, 214, 255, 0.7)',
     accent: 'rgba(140, 200, 255, 0.35)',
     avatar: 'X',
-    voice: 'Cedar',
+    voice: 'cedar',
   }
 }
 
@@ -77,7 +77,7 @@ const HOST_ROLE = {
   accent: 'rgba(124, 255, 219, 0.35)',
   avatar: 'H',
   avatarImage: hostAvatar,
-  voice: 'Marin',
+  voice: 'marin',
 }
 
 const USER_ROLE = {

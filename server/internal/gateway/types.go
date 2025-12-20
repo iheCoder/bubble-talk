@@ -86,6 +86,9 @@ type TurnDetectionConfig struct {
 	Threshold         float64 `json:"threshold,omitempty"`           // 0.0-1.0
 	PrefixPaddingMS   int     `json:"prefix_padding_ms,omitempty"`   // 开始前填充
 	SilenceDurationMS int     `json:"silence_duration_ms,omitempty"` // 静音多久算结束
+	// CreateResponse 控制 server_vad 检测到用户说完后，是否由 Realtime 自动创建 response。
+	// 我们的产品需要导演/演员控制输出，因此必须关闭自动创建，避免“抢答/乱序/双声道”。
+	CreateResponse bool `json:"create_response,omitempty"`
 }
 
 // InputAudioTranscriptionConfig 控制输入音频转写
@@ -106,6 +109,8 @@ type RealtimeResponseCreateConfig struct {
 	Voice        string   `json:"voice,omitempty"`
 	Temperature  float64  `json:"temperature,omitempty"`
 	MaxTokens    int      `json:"max_tokens,omitempty"`
+	// Metadata 用于在 response.created 回传时区分“我们手动创建” vs “Realtime 自动创建(若存在)”
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // RealtimeResponseCancel 取消当前回复（插话中断时使用）

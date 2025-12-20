@@ -59,9 +59,11 @@ type Gateway struct {
 	activeMetadata     map[string]interface{}
 	activeMetadataLock sync.RWMutex
 
-	// 标记当前响应是否由我们主动创建（vs OpenAI 自动创建）
-	expectingOurResponse     bool
-	expectingOurResponseLock sync.Mutex
+	// response.create 的标记字段，用于区分“我们创建的 response”与“Realtime 自动创建(若存在)”
+	responseCreateNonce      int64
+	responseCreateNonceLock  sync.Mutex
+	lastResponseCreateAt     time.Time
+	lastResponseCreateAtLock sync.Mutex
 
 	// 序列号生成器（用于ServerMessage）
 	seqCounter int64
@@ -226,6 +228,7 @@ func (g *Gateway) initRealtimeSession(_ context.Context) error {
 				Threshold:         0.5,
 				PrefixPaddingMS:   300,
 				SilenceDurationMS: 500, // 500ms静音认为说完
+				CreateResponse:    false,
 			},
 			Temperature: 0.8,
 		},
@@ -462,6 +465,9 @@ func (g *Gateway) handleRealtimeEvent(data []byte) error {
 	case "response.content_part.added":
 		// 内容部分添加
 		return nil
+	case "response.content_part.done":
+		// 内容部分结束（当前不需要处理，避免日志噪音）
+		return nil
 
 	case "response.audio.delta":
 		// TTS音频流（转发给客户端）
@@ -470,6 +476,10 @@ func (g *Gateway) handleRealtimeEvent(data []byte) error {
 	case "response.audio.done":
 		// TTS完成
 		return g.handleAudioDone(data)
+
+	case "response.audio_transcript.delta", "response.audio_transcript.done":
+		// 音频字幕（可选），当前前端不消费，忽略即可
+		return nil
 
 	case "response.done":
 		// 响应完成
@@ -482,6 +492,10 @@ func (g *Gateway) handleRealtimeEvent(data []byte) error {
 	case "response.text.done":
 		// 文本完成
 		return g.handleTextDone(data)
+
+	case "response.output_item.done":
+		// 输出项结束（当前不需要处理）
+		return nil
 
 	case "error":
 		// 错误事件
@@ -690,7 +704,8 @@ func (g *Gateway) handleResponseCreated(data []byte) error {
 	var event struct {
 		Type     string `json:"type"`
 		Response struct {
-			ID string `json:"id"`
+			ID       string                 `json:"id"`
+			Metadata map[string]interface{} `json:"metadata"`
 		} `json:"response"`
 	}
 
@@ -698,49 +713,41 @@ func (g *Gateway) handleResponseCreated(data []byte) error {
 		return err
 	}
 
-	// 检查这是否是我们主动创建的响应
-	g.expectingOurResponseLock.Lock()
-	isOurResponse := g.expectingOurResponse
-	if isOurResponse {
-		// 重置标志
-		g.expectingOurResponse = false
-	}
-	g.expectingOurResponseLock.Unlock()
-
-	if !isOurResponse {
-		// 这是 OpenAI 自动创建的响应（server_vad 触发的）
-		// 我们需要取消它，因为我们要用 Director/Actor 的指令
-		g.logger.Printf("[Gateway] 🛑 Detected auto-generated response %s, canceling it...", event.Response.ID)
-
-		cancel := RealtimeResponseCancel{
-			Type:       "response.cancel",
-			ResponseID: event.Response.ID,
-		}
-
-		if err := g.sendToRealtime(cancel); err != nil {
-			g.logger.Printf("[Gateway] ❌ Failed to cancel auto response: %v", err)
-			// 不返回错误，继续处理
-		} else {
-			g.logger.Printf("[Gateway] ✅ Auto-generated response canceled")
-		}
-
+	// 兼容性策略：
+	// 1) 优先用 metadata 判断（最稳）
+	// 2) 若服务端不回传 metadata，则使用“最近是否发送过 response.create”的时间窗兜底
+	// 3) 只有在 1) 不是我们 + 2) 也不满足，才取消，避免误杀我们自己的 response
+	if g.isOurRealtimeResponse(event.Response.Metadata) || g.isLikelyOurResponseByRecentCreate() {
+		g.logger.Printf("[Gateway] ✅ Our response created: %s", event.Response.ID)
+		g.activeResponseIDLock.Lock()
+		g.activeResponseID = event.Response.ID
+		g.activeResponseIDLock.Unlock()
 		return nil
 	}
 
-	// 这是我们的响应，记录ID用于 barge-in
-	g.logger.Printf("[Gateway] ✅ Our response created: %s", event.Response.ID)
-	g.activeResponseIDLock.Lock()
-	g.activeResponseID = event.Response.ID
-	g.activeResponseIDLock.Unlock()
-
+	g.logger.Printf("[Gateway] 🛑 Detected auto-generated response %s, canceling...", event.Response.ID)
+	cancel := RealtimeResponseCancel{Type: "response.cancel", ResponseID: event.Response.ID}
+	if err := g.sendToRealtime(cancel); err != nil {
+		g.logger.Printf("[Gateway] ❌ Failed to cancel auto response: %v", err)
+	} else {
+		g.logger.Printf("[Gateway] ✅ Auto-generated response canceled")
+	}
 	return nil
 }
 
 // handleResponseOutputItemAdded 处理输出项添加事件
 func (g *Gateway) handleResponseOutputItemAdded(data []byte) error {
-	// TTS开始
+	// TTS开始（附带元数据，便于前端提前切换 activeRole / 动画）
+	g.activeMetadataLock.RLock()
+	metadata := make(map[string]interface{}, len(g.activeMetadata))
+	for k, v := range g.activeMetadata {
+		metadata[k] = v
+	}
+	g.activeMetadataLock.RUnlock()
+
 	g.sendToClient(&ServerMessage{
 		Type:     EventTypeTTSStarted,
+		Metadata: metadata,
 		ServerTS: time.Now(),
 	})
 	return nil
@@ -780,9 +787,17 @@ func (g *Gateway) handleAudioDelta(data []byte) error {
 
 // handleAudioDone 处理TTS完成事件
 func (g *Gateway) handleAudioDone(data []byte) error {
-	// 通知客户端TTS完成
+	// 通知客户端TTS完成（附带元数据，前端可用于收尾但不应直接等同于“播放已结束”）
+	g.activeMetadataLock.RLock()
+	metadata := make(map[string]interface{}, len(g.activeMetadata))
+	for k, v := range g.activeMetadata {
+		metadata[k] = v
+	}
+	g.activeMetadataLock.RUnlock()
+
 	g.sendToClient(&ServerMessage{
 		Type:     EventTypeTTSCompleted,
+		Metadata: metadata,
 		ServerTS: time.Now(),
 	})
 	return nil
@@ -898,10 +913,10 @@ func (g *Gateway) SendInstructions(_ context.Context, instructions string, metad
 	g.activeMetadata = metadata
 	g.activeMetadataLock.Unlock()
 
-	// 标记：接下来的响应是我们主动创建的
-	g.expectingOurResponseLock.Lock()
-	g.expectingOurResponse = true
-	g.expectingOurResponseLock.Unlock()
+	// 生成一个 nonce，写入到 response.metadata 里，用于识别 response.created 回传
+	nonce := g.nextResponseCreateNonce()
+	realtimeMetadata := g.buildRealtimeResponseMetadata(metadata, nonce)
+	g.markResponseCreateSent()
 
 	// 构造response.create指令
 	create := RealtimeResponseCreate{
@@ -911,10 +926,70 @@ func (g *Gateway) SendInstructions(_ context.Context, instructions string, metad
 			Instructions: instructions,
 			Voice:        g.resolveVoice(metadata),
 			Temperature:  0.8,
+			Metadata:     realtimeMetadata,
 		},
 	}
 
 	return g.sendToRealtime(create)
+}
+
+func (g *Gateway) markResponseCreateSent() {
+	g.lastResponseCreateAtLock.Lock()
+	g.lastResponseCreateAt = time.Now()
+	g.lastResponseCreateAtLock.Unlock()
+}
+
+func (g *Gateway) isLikelyOurResponseByRecentCreate() bool {
+	// 经验值：response.created 一般会在 response.create 之后很快返回（毫秒级到秒级）
+	const window = 3 * time.Second
+	g.lastResponseCreateAtLock.Lock()
+	at := g.lastResponseCreateAt
+	g.lastResponseCreateAtLock.Unlock()
+	if at.IsZero() {
+		return false
+	}
+	return time.Since(at) <= window
+}
+
+func (g *Gateway) nextResponseCreateNonce() int64 {
+	g.responseCreateNonceLock.Lock()
+	defer g.responseCreateNonceLock.Unlock()
+	g.responseCreateNonce++
+	return g.responseCreateNonce
+}
+
+func (g *Gateway) buildRealtimeResponseMetadata(metadata map[string]interface{}, nonce int64) map[string]interface{} {
+	// 注意：Realtime metadata 应尽量小，且避免包含敏感信息。
+	result := map[string]interface{}{
+		"bubbletalk_session_id": g.sessionID,
+		// Realtime 对 metadata 值类型有强约束：这里统一用 string，避免模型侧校验失败。
+		"bubbletalk_nonce":  fmt.Sprintf("%d", nonce),
+		"bubbletalk_source": "orchestrator",
+	}
+	if metadata == nil {
+		return result
+	}
+	if role, ok := metadata["role"].(string); ok && role != "" {
+		result["role"] = role
+	}
+	if beat, ok := metadata["beat"].(string); ok && beat != "" {
+		result["beat"] = beat
+	}
+	return result
+}
+
+func (g *Gateway) isOurRealtimeResponse(realtimeMetadata map[string]interface{}) bool {
+	if len(realtimeMetadata) == 0 {
+		return false
+	}
+	if v, ok := realtimeMetadata["bubbletalk_session_id"].(string); !ok || v != g.sessionID {
+		return false
+	}
+	if v, ok := realtimeMetadata["bubbletalk_source"].(string); !ok || v != "orchestrator" {
+		return false
+	}
+	nonce, ok := realtimeMetadata["bubbletalk_nonce"].(string)
+	return ok && nonce != ""
 }
 
 func (g *Gateway) resolveVoice(metadata map[string]interface{}) string {
