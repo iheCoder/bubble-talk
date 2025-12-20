@@ -110,7 +110,6 @@ const activeRole = ref('host')
 const isThinking = ref(true)
 const toolState = ref('hidden')
 const selectedOption = ref(null)
-const toolFragment = ref(false)
 const input = ref('')
 const timers = []
 
@@ -352,14 +351,6 @@ const playSequence = () => {
       text: props.bubble?.detail || '这是一个非常值得探讨的问题，因为它触及了我们认知的盲区。',
       pause: 3000,
     },
-    {
-      role: 'host',
-      text: '我们先来做一个直觉检验，看看大家通常是怎么想的。',
-      pause: 2000,
-      after: () => {
-        toolState.value = 'show'
-      },
-    },
   ]
 
   const runStep = (index) => {
@@ -401,28 +392,6 @@ const handleDisconnect = () => {
   emit('exit-world')
 }
 
-const handleOptionSelect = (option) => {
-  if (toolResolved.value) return
-  const expert = getExpertRole(props.bubble?.tag)
-
-  selectedOption.value = option
-  toolState.value = 'resolved'
-  toolFragment.value = true
-  activeRole.value = expert.id
-  isThinking.value = true
-
-  schedule(() => {
-    isThinking.value = false
-    pushMessage(expert.id, '很有趣的选择。这反映了我们大脑的一种典型偏好。')
-    schedule(() => {
-      pushMessage('host', '那么，这种偏好在其他场景下也会出现吗？')
-    }, 3000)
-  }, 700)
-
-  schedule(() => {
-    toolState.value = 'hidden'
-  }, 5000)
-}
 
 onMounted(() => {
   playSequence()
@@ -509,7 +478,6 @@ onBeforeUnmount(() => {
                     :key="idx"
                     class="quiz-option"
                     :class="{ 'selected': selectedOption === idx }"
-                    @click="handleOptionSelect(idx)"
                   >
                     {{ opt }}
                   </button>
