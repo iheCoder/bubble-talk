@@ -55,6 +55,14 @@ type Gateway struct {
 	activeResponseID     string
 	activeResponseIDLock sync.RWMutex
 
+	// 当前响应的元数据（角色、Beat等）
+	activeMetadata     map[string]interface{}
+	activeMetadataLock sync.RWMutex
+
+	// 标记当前响应是否由我们主动创建（vs OpenAI 自动创建）
+	expectingOurResponse     bool
+	expectingOurResponseLock sync.Mutex
+
 	// 序列号生成器（用于ServerMessage）
 	seqCounter int64
 	seqLock    sync.Mutex
@@ -83,8 +91,9 @@ type GatewayConfig struct {
 	PingInterval time.Duration
 
 	// 音频配置
-	InputAudioFormat  string // pcm16
-	OutputAudioFormat string // pcm16
+	InputAudioFormat             string // pcm16
+	OutputAudioFormat            string // pcm16
+	InputAudioTranscriptionModel string
 }
 
 // NewGateway 创建一个新的Gateway实例
@@ -113,23 +122,34 @@ func (g *Gateway) SetEventHandler(handler EventHandler) {
 // 2. 初始化会话配置
 // 3. 启动双向转发协程
 func (g *Gateway) Start(ctx context.Context) error {
+	g.logger.Printf("[Gateway] Starting gateway for session %s", g.sessionID)
+	g.logger.Printf("[Gateway] Config: model=%s voice=%s input_format=%s output_format=%s",
+		g.config.Model, g.config.Voice, g.config.InputAudioFormat, g.config.OutputAudioFormat)
+
 	// 1. 连接OpenAI Realtime
+	g.logger.Printf("[Gateway] Connecting to OpenAI Realtime...")
 	if err := g.connectRealtime(ctx); err != nil {
+		g.logger.Printf("[Gateway] ❌ Failed to connect to OpenAI Realtime: %v", err)
 		return fmt.Errorf("connect realtime: %w", err)
 	}
+	g.logger.Printf("[Gateway] ✅ Successfully connected to OpenAI Realtime")
 
 	// 2. 初始化会话配置
+	g.logger.Printf("[Gateway] Initializing Realtime session...")
 	if err := g.initRealtimeSession(ctx); err != nil {
-		g.closeRealtimeConn()
+		g.logger.Printf("[Gateway] ❌ Failed to initialize session: %v", err)
+		_ = g.closeRealtimeConn()
 		return fmt.Errorf("init realtime session: %w", err)
 	}
+	g.logger.Printf("[Gateway] ✅ Realtime session initialized")
 
 	// 3. 启动事件循环
+	g.logger.Printf("[Gateway] Starting event loops...")
 	go g.clientReadLoop()
 	go g.realtimeReadLoop()
 	go g.pingLoop()
 
-	g.logger.Printf("[Gateway] started for session %s", g.sessionID)
+	g.logger.Printf("[Gateway] ✅ Gateway fully started for session %s", g.sessionID)
 	return nil
 }
 
@@ -144,6 +164,9 @@ func (g *Gateway) connectRealtime(ctx context.Context) error {
 		url = fmt.Sprintf("wss://api.openai.com/v1/realtime?model=%s", model)
 	}
 
+	g.logger.Printf("[Gateway] Connecting to: %s", url)
+	g.logger.Printf("[Gateway] API Key prefix: %s...", g.config.OpenAIAPIKey[:min(10, len(g.config.OpenAIAPIKey))])
+
 	headers := make(map[string][]string)
 	headers["Authorization"] = []string{"Bearer " + g.config.OpenAIAPIKey}
 	headers["OpenAI-Beta"] = []string{"realtime=v1"}
@@ -152,22 +175,35 @@ func (g *Gateway) connectRealtime(ctx context.Context) error {
 		HandshakeTimeout: 15 * time.Second,
 	}
 
+	g.logger.Printf("[Gateway] Dialing WebSocket...")
 	conn, resp, err := dialer.DialContext(ctx, url, headers)
 	if err != nil {
 		if resp != nil {
+			g.logger.Printf("[Gateway] ❌ Dial failed: HTTP %d %s", resp.StatusCode, resp.Status)
 			return fmt.Errorf("dial realtime: status=%d err=%w", resp.StatusCode, err)
 		}
+		g.logger.Printf("[Gateway] ❌ Dial failed: %v", err)
 		return fmt.Errorf("dial realtime: %w", err)
 	}
 
 	g.realtimeConn = conn
-	g.logger.Printf("[Gateway] connected to OpenAI Realtime: %s", url)
+	g.logger.Printf("[Gateway] ✅ WebSocket connection established")
+	g.logger.Printf("[Gateway] Connected to OpenAI Realtime: %s", url)
 	return nil
 }
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // initRealtimeSession 初始化Realtime会话配置
-func (g *Gateway) initRealtimeSession(ctx context.Context) error {
+func (g *Gateway) initRealtimeSession(_ context.Context) error {
 	// 构造session.update指令
+	// 策略调整：启用 server_vad 用于自动转写
+	// 但我们会在收到转写后立即取消自动响应，改用我们的 Director/Actor
 	update := RealtimeSessionUpdate{
 		Type: "session.update",
 		Session: RealtimeSessionConfig{
@@ -176,6 +212,9 @@ func (g *Gateway) initRealtimeSession(ctx context.Context) error {
 			Voice:             g.config.Voice,
 			InputAudioFormat:  g.config.InputAudioFormat,
 			OutputAudioFormat: g.config.OutputAudioFormat,
+			InputAudioTranscription: &InputAudioTranscriptionConfig{
+				Model: g.config.InputAudioTranscriptionModel,
+			},
 			TurnDetection: &TurnDetectionConfig{
 				Type:              "server_vad",
 				Threshold:         0.5,
@@ -195,8 +234,21 @@ func (g *Gateway) initRealtimeSession(ctx context.Context) error {
 	if g.config.OutputAudioFormat == "" {
 		update.Session.OutputAudioFormat = "pcm16"
 	}
+	if update.Session.InputAudioTranscription != nil && update.Session.InputAudioTranscription.Model == "" {
+		update.Session.InputAudioTranscription.Model = "gpt-4o-mini-transcribe"
+	}
 
-	return g.sendToRealtime(update)
+	g.logger.Printf("[Gateway] Sending session.update: voice=%s input_format=%s output_format=%s",
+		update.Session.Voice, update.Session.InputAudioFormat, update.Session.OutputAudioFormat)
+	g.logger.Printf("[Gateway] Instructions length: %d chars", len(update.Session.Instructions))
+
+	if err := g.sendToRealtime(update); err != nil {
+		g.logger.Printf("[Gateway] ❌ Failed to send session.update: %v", err)
+		return err
+	}
+
+	g.logger.Printf("[Gateway] ✅ session.update sent successfully")
+	return nil
 }
 
 // clientReadLoop 从客户端读取消息（事件+音频）
@@ -388,6 +440,14 @@ func (g *Gateway) handleRealtimeEvent(data []byte) error {
 		// 对话项创建（包含ASR转写）
 		return g.handleConversationItemCreated(data)
 
+	case "conversation.item.input_audio_transcription.delta":
+		// 输入音频转写增量
+		return g.handleInputAudioTranscriptionDelta(data)
+
+	case "conversation.item.input_audio_transcription.completed":
+		// 输入音频转写完成
+		return g.handleInputAudioTranscriptionCompleted(data)
+
 	case "response.created":
 		// 响应创建
 		return g.handleResponseCreated(data)
@@ -442,12 +502,18 @@ func (g *Gateway) handleSpeechStarted(data []byte) error {
 }
 
 // handleSpeechStopped 处理用户停止说话事件
-func (g *Gateway) handleSpeechStopped(data []byte) error {
+func (g *Gateway) handleSpeechStopped(_ []byte) error {
+	g.logger.Printf("[Gateway] 🎤 User stopped speaking (VAD detected)")
+
 	// 通知客户端
-	g.sendToClient(&ServerMessage{
+	_ = g.sendToClient(&ServerMessage{
 		Type:     "speech_stopped",
 		ServerTS: time.Now(),
 	})
+
+	// server_vad 会自动 commit 并生成转写
+	// 我们只需要等待 conversation.item.created 事件
+	g.logger.Printf("[Gateway] Waiting for automatic transcription from server_vad...")
 	return nil
 }
 
@@ -472,35 +538,148 @@ func (g *Gateway) handleConversationItemCreated(data []byte) error {
 		return err
 	}
 
-	// 如果是用户消息且有转写文本，提取ASR结果
-	if event.Item.Role == "user" && len(event.Item.Content) > 0 {
-		for _, content := range event.Item.Content {
-			if content.Transcript != "" {
-				// 这是ASR最终转写，发送给Orchestrator
-				asrMsg := &ClientMessage{
-					Type:     EventTypeASRFinal,
-					Text:     content.Transcript,
-					TurnID:   event.Item.ID,
-					ClientTS: time.Now(),
+	g.logger.Printf("[Gateway] 📝 Conversation item created: role=%s type=%s content_count=%d",
+		event.Item.Role, event.Item.Type, len(event.Item.Content))
+
+	// 如果是用户消息，提取转写并触发我们的流程
+	if event.Item.Role == "user" {
+		g.logger.Printf("[Gateway] 👤 User message detected, checking for transcript...")
+
+		if len(event.Item.Content) > 0 {
+			for i, content := range event.Item.Content {
+				g.logger.Printf("[Gateway]   Content[%d]: type=%s, transcript=%q, text=%q",
+					i, content.Type, content.Transcript, content.Text)
+
+				// 尝试从 transcript 或 text 字段获取文本
+				transcriptText := content.Transcript
+				if transcriptText == "" {
+					transcriptText = content.Text
 				}
 
-				// 转发给Orchestrator
-				if err := g.forwardToOrchestrator(asrMsg); err != nil {
-					return err
-				}
+				if transcriptText != "" {
+					g.logger.Printf("[Gateway] ✅ Got ASR transcription: %q", transcriptText)
 
-				// 也发送给客户端（用于UI显示）
-				g.sendToClient(&ServerMessage{
-					Type:     EventTypeASRFinal,
-					Text:     content.Transcript,
-					TurnID:   event.Item.ID,
-					ServerTS: time.Now(),
-				})
+					// 关键：取消即将自动生成的响应
+					// server_vad 会自动触发 response.create，我们需要取消它
+					g.logger.Printf("[Gateway] 🛑 Canceling auto-generated response to use our Director/Actor...")
+
+					// 这是ASR最终转写，发送给Orchestrator
+					asrMsg := &ClientMessage{
+						Type:     EventTypeASRFinal,
+						Text:     transcriptText,
+						TurnID:   event.Item.ID,
+						ClientTS: time.Now(),
+					}
+
+					// 转发给Orchestrator（这会触发我们的 Director/Actor）
+					if err := g.forwardToOrchestrator(asrMsg); err != nil {
+						g.logger.Printf("[Gateway] ❌ Failed to forward to Orchestrator: %v", err)
+						return err
+					}
+
+					// 也发送给客户端（用于UI显示）
+					_ = g.sendToClient(&ServerMessage{
+						Type:     EventTypeASRFinal,
+						Text:     transcriptText,
+						TurnID:   event.Item.ID,
+						ServerTS: time.Now(),
+					})
+
+					g.logger.Printf("[Gateway] ✅ ASR forwarded to Orchestrator")
+					return nil
+				}
 			}
+			g.logger.Printf("[Gateway] ⚠️  No transcript found in user message content")
+		} else {
+			g.logger.Printf("[Gateway] ⚠️  User message has no content")
 		}
 	}
 
 	return nil
+}
+
+// handleInputAudioTranscriptionDelta 处理输入音频转写增量
+func (g *Gateway) handleInputAudioTranscriptionDelta(data []byte) error {
+	var event struct {
+		Type         string `json:"type"`
+		EventID      string `json:"event_id"`
+		ItemID       string `json:"item_id"`
+		ContentIndex int    `json:"content_index"`
+		Delta        string `json:"delta"`
+		Transcript   string `json:"transcript"`
+		Text         string `json:"text"`
+	}
+
+	if err := json.Unmarshal(data, &event); err != nil {
+		return err
+	}
+
+	text := firstNonEmpty(event.Delta, event.Transcript, event.Text)
+	if text == "" {
+		return nil
+	}
+
+	_ = g.sendToClient(&ServerMessage{
+		Type:     EventTypeASRPartial,
+		Text:     text,
+		TurnID:   event.ItemID,
+		ServerTS: time.Now(),
+	})
+	return nil
+}
+
+// handleInputAudioTranscriptionCompleted 处理输入音频转写完成
+func (g *Gateway) handleInputAudioTranscriptionCompleted(data []byte) error {
+	var event struct {
+		Type         string `json:"type"`
+		EventID      string `json:"event_id"`
+		ItemID       string `json:"item_id"`
+		ContentIndex int    `json:"content_index"`
+		Transcript   string `json:"transcript"`
+		Text         string `json:"text"`
+	}
+
+	if err := json.Unmarshal(data, &event); err != nil {
+		return err
+	}
+
+	text := firstNonEmpty(event.Transcript, event.Text)
+	if text == "" {
+		g.logger.Printf("[Gateway] ⚠️  Empty transcription in completed event")
+		return nil
+	}
+
+	g.logger.Printf("[Gateway] ✅ Got ASR transcription (completed): %q", text)
+
+	asrMsg := &ClientMessage{
+		Type:     EventTypeASRFinal,
+		Text:     text,
+		TurnID:   event.ItemID,
+		ClientTS: time.Now(),
+	}
+
+	if err := g.forwardToOrchestrator(asrMsg); err != nil {
+		g.logger.Printf("[Gateway] ❌ Failed to forward to Orchestrator: %v", err)
+		return err
+	}
+
+	_ = g.sendToClient(&ServerMessage{
+		Type:     EventTypeASRFinal,
+		Text:     text,
+		TurnID:   event.ItemID,
+		ServerTS: time.Now(),
+	})
+
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // handleResponseCreated 处理响应创建事件
@@ -516,7 +695,37 @@ func (g *Gateway) handleResponseCreated(data []byte) error {
 		return err
 	}
 
-	// 记录活跃响应ID（用于barge-in取消）
+	// 检查这是否是我们主动创建的响应
+	g.expectingOurResponseLock.Lock()
+	isOurResponse := g.expectingOurResponse
+	if isOurResponse {
+		// 重置标志
+		g.expectingOurResponse = false
+	}
+	g.expectingOurResponseLock.Unlock()
+
+	if !isOurResponse {
+		// 这是 OpenAI 自动创建的响应（server_vad 触发的）
+		// 我们需要取消它，因为我们要用 Director/Actor 的指令
+		g.logger.Printf("[Gateway] 🛑 Detected auto-generated response %s, canceling it...", event.Response.ID)
+
+		cancel := RealtimeResponseCancel{
+			Type:       "response.cancel",
+			ResponseID: event.Response.ID,
+		}
+
+		if err := g.sendToRealtime(cancel); err != nil {
+			g.logger.Printf("[Gateway] ❌ Failed to cancel auto response: %v", err)
+			// 不返回错误，继续处理
+		} else {
+			g.logger.Printf("[Gateway] ✅ Auto-generated response canceled")
+		}
+
+		return nil
+	}
+
+	// 这是我们的响应，记录ID用于 barge-in
+	g.logger.Printf("[Gateway] ✅ Our response created: %s", event.Response.ID)
 	g.activeResponseIDLock.Lock()
 	g.activeResponseID = event.Response.ID
 	g.activeResponseIDLock.Unlock()
@@ -626,11 +835,20 @@ func (g *Gateway) handleTextDone(data []byte) error {
 		return err
 	}
 
-	// 发送完整文本给客户端
+	// 获取当前响应的元数据
+	g.activeMetadataLock.RLock()
+	metadata := make(map[string]interface{})
+	for k, v := range g.activeMetadata {
+		metadata[k] = v
+	}
+	g.activeMetadataLock.RUnlock()
+
+	// 发送完整文本给客户端，附带元数据
 	g.sendToClient(&ServerMessage{
 		Type:     EventTypeAssistantText,
 		Text:     event.Text,
 		TurnID:   event.ItemID,
+		Metadata: metadata,
 		ServerTS: time.Now(),
 	})
 
@@ -639,6 +857,7 @@ func (g *Gateway) handleTextDone(data []byte) error {
 		Type:     EventTypeAssistantText,
 		Text:     event.Text,
 		TurnID:   event.ItemID,
+		Metadata: metadata,
 		ClientTS: time.Now(),
 	}
 	return g.forwardToOrchestrator(asrMsg)
@@ -668,8 +887,18 @@ func (g *Gateway) handleRealtimeError(data []byte) error {
 
 // SendInstructions 发送导演指令到Realtime（由Orchestrator调用）
 // 这是后端"控制Realtime大脑"的关键方法
-func (g *Gateway) SendInstructions(ctx context.Context, instructions string, metadata map[string]interface{}) error {
+func (g *Gateway) SendInstructions(_ context.Context, instructions string, metadata map[string]interface{}) error {
 	g.logger.Printf("[Gateway] sending instructions to Realtime: %s", instructions)
+
+	// 保存元数据，以便在收到响应时使用
+	g.activeMetadataLock.Lock()
+	g.activeMetadata = metadata
+	g.activeMetadataLock.Unlock()
+
+	// 标记：接下来的响应是我们主动创建的
+	g.expectingOurResponseLock.Lock()
+	g.expectingOurResponse = true
+	g.expectingOurResponseLock.Unlock()
 
 	// 构造response.create指令
 	create := RealtimeResponseCreate{
@@ -850,4 +1079,9 @@ func (g *Gateway) closeRealtimeConn() error {
 	err := g.realtimeConn.Close()
 	g.realtimeConn = nil
 	return err
+}
+
+// Done returns a channel that's closed when the gateway is closed
+func (g *Gateway) Done() <-chan struct{} {
+	return g.closeChan
 }

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { connectRealtime } from '../api/realtime'
+import { BubbleTalkGateway, AudioPlayer } from '../api/gateway.js'
 
 const props = defineProps({
   bubble: {
@@ -117,21 +117,38 @@ const timers = []
 // New state for Round Table mode
 const currentSpeech = ref({
   host: null,
-  expert: null, // Generic key for the second role
+  expert: null,
   user: null
 })
-const isMicActive = ref(true) // 默认启用：连接后允许直接说话
+const isMicActive = ref(false) // 初始为 false，连接后才启用
 const isMuted = ref(false)
-// rtcClient 保存一次 WebRTC 连接实例（OpenAI Realtime）。
-const rtcClient = ref(null)
 
-// 远端音频元素：用于播放 OpenAI Realtime 下行的语音。
-const remoteAudioEl = ref(null)
-// 事件调试：展示最近的 Realtime 事件，便于你调参/排错。
+// WebSocket Gateway 相关
+const gateway = ref(null)
+const audioPlayer = ref(null)
+const isConnecting = ref(false)
+const isConnected = ref(false)
+const connectionError = ref('')
+
+// 转写和调试
 const transcript = ref([])
-const errorText = ref('')
+const partialTranscript = ref('')
 
-const isRealtimeConnected = computed(() => !!rtcClient.value)
+// 诊断题目
+const diagnose = ref({
+  questions: [
+    {
+      prompt: '周末加班800元，你会选择哪个？',
+      options: [
+        'A. 赚钱，毕竟800块不少',
+        'B. 休息，健康更重要',
+        'C. 看情况，要考虑很多因素'
+      ]
+    }
+  ]
+})
+
+const isRealtimeConnected = computed(() => isConnected.value)
 
 const expertRole = computed(() => getExpertRole(props.bubble?.tag))
 const roleMap = computed(() => {
@@ -148,7 +165,7 @@ const ensureSession = async () => {
   // 后续：前端改为直接展示后端 /api/bubbles 的结果。
   if (props.sessionId) return props.sessionId
   const entryId = props.bubble?.entry_id || 'econ_weekend_overtime'
-  const resp = await fetch(`/api/sessions`, {
+  const resp = await fetch(`http://localhost:8080/api/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ entry_id: entryId }),
@@ -160,40 +177,126 @@ const ensureSession = async () => {
 }
 
 const connect = async () => {
-  try {
-    errorText.value = ''
-    const sessionId = await ensureSession()
+  if (isConnecting.value || isConnected.value) return
 
-    rtcClient.value = await connectRealtime({
-      backendBaseUrl: '',
-      sessionId,
-      onRemoteStream: (stream) => {
-        if (!remoteAudioEl.value) return
-        remoteAudioEl.value.srcObject = stream
-        remoteAudioEl.value.play().catch(() => {})
-      },
-      onEvent: (evt) => {
-        // 这里只做最小可见性：把关键事件展示出来，便于调试。
-        transcript.value.push(evt)
-      },
-    })
-    isMicActive.value = true
+  try {
+    isConnecting.value = true
+    connectionError.value = ''
+
+    // 确保有 session
+    const sessionId = await ensureSession()
+    console.log('[WorldView] Session ID:', sessionId)
+
+    // 创建 Gateway
+    gateway.value = new BubbleTalkGateway(sessionId)
+    audioPlayer.value = new AudioPlayer()
+
+    // 设置事件回调
+    gateway.value.onConnected = async () => {
+      isConnected.value = true
+      isConnecting.value = false
+      console.log('[WorldView] ✅ Gateway 连接成功')
+
+      // 自动开始录音（如果没有静音）
+      if (!isMuted.value) {
+        try {
+          await gateway.value.startRecording()
+          isMicActive.value = true
+          console.log('[WorldView] 🎤 自动开始录音')
+        } catch (err) {
+          console.error('[WorldView] ❌ 录音失败:', err)
+        }
+      }
+
+      // 连接成功后，显示欢迎消息
+      addMessage('system', '🎙️ 语音连接已建立，你可以开始说话了！例如："我想了解一下这个话题"')
+
+      // 注意：不再调用 playSequence()，因为那是模拟的硬编码对话
+      // 真正的对话会在用户说话后，由后端 Director/Actor 生成并通过 TTS 播放
+    }
+
+    gateway.value.onDisconnected = () => {
+      isConnected.value = false
+      console.log('[WorldView] Gateway 断开')
+    }
+
+    // ASR 实时转写
+    gateway.value.onASRPartial = (text) => {
+      partialTranscript.value = text
+      console.log('[WorldView] 部分转写:', text)
+    }
+
+    // ASR 最终转写 - 用户说完了
+    gateway.value.onASRFinal = (text) => {
+      partialTranscript.value = ''
+      pushMessage('user', text)
+      transcript.value.push({ type: 'user', text, time: new Date() })
+      console.log('[WorldView] ✅ 用户说:', text)
+    }
+
+    // TTS 开始 - AI 开始说话
+    gateway.value.onTTSStarted = () => {
+      console.log('[WorldView] 🔊 AI 开始说话')
+    }
+
+    // TTS 完成
+    gateway.value.onTTSCompleted = () => {
+      console.log('[WorldView] ✅ AI 说话完成')
+    }
+
+    // 接收音频数据并播放
+    gateway.value.onAudioData = async (blob) => {
+      console.log('[WorldView] 🎵 收到音频:', blob.size, 'bytes')
+      await audioPlayer.value.playAudioBlob(blob)
+    }
+
+    // 接收助手文本 - 显示哪个角色在说话
+    gateway.value.onAssistantText = (text, metadata) => {
+      const role = metadata?.role || expertRole.value.id
+      const beat = metadata?.beat
+
+      console.log('[WorldView] 💬 AI 说话:', role, text)
+
+      // 显示对话气泡
+      activeRole.value = role
+      pushMessage(role, text)
+
+      // 记录到转写历史
+      transcript.value.push({
+        type: 'assistant',
+        role,
+        text,
+        beat,
+        time: new Date()
+      })
+    }
+
+    // 错误处理
+    gateway.value.onError = (error) => {
+      connectionError.value = error.message
+      console.error('[WorldView] ❌ 错误:', error)
+      isConnecting.value = false
+    }
+
+    // 连接 WebSocket
+    await gateway.value.connect()
+
   } catch (err) {
-    errorText.value = err?.message || String(err)
-    disconnect()
+    connectionError.value = err.message
+    isConnecting.value = false
+    isConnected.value = false
+    console.error('[WorldView] ❌ 连接失败:', err)
   }
 }
 
 const disconnect = () => {
   isMicActive.value = false
-  try {
-    rtcClient.value?.close()
-  } catch {}
-  rtcClient.value = null
-  if (remoteAudioEl.value) {
-    try { remoteAudioEl.value.pause() } catch {}
-    remoteAudioEl.value.srcObject = null
+  if (gateway.value) {
+    gateway.value.stopRecording()
+    gateway.value.disconnect()
+    gateway.value = null
   }
+  isConnected.value = false
 }
 
 const pushMessage = (role, text) => {
@@ -219,6 +322,11 @@ const pushMessage = (role, text) => {
       currentSpeech.value[role] = null
     }
   }, duration + 1000)
+}
+
+// 辅助函数：添加系统消息
+const addMessage = (role, text) => {
+  pushMessage(role, text)
 }
 
 const schedule = (fn, delay) => {
@@ -280,8 +388,12 @@ const handleSend = () => {
 
 const toggleMute = () => {
   isMuted.value = !isMuted.value
-  if (rtcClient.value) {
-    rtcClient.value.setMuted(isMuted.value)
+  if (gateway.value) {
+    if (isMuted.value) {
+      gateway.value.stopRecording()
+    } else if (isMicActive.value) {
+      gateway.value.startRecording()
+    }
   }
 }
 
@@ -329,9 +441,6 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- 远端音频（OpenAI Realtime TTS 下行） -->
-  <audio ref="remoteAudioEl" autoplay></audio>
-
   <div class="world-view">
     <!-- Header Layer -->
     <header class="world-header glass-panel">
@@ -368,9 +477,9 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="errorText" class="error-toast">
-      {{ errorText }}
-      <button @click="errorText = ''">✕</button>
+    <div v-if="connectionError" class="error-toast">
+      {{ connectionError }}
+      <button @click="connectionError = ''">✕</button>
     </div>
 
     <!-- Round Table Stage -->

@@ -204,16 +204,17 @@ func (s *Server) handleSessionStream(c *gin.Context) {
 
 	// 创建 Gateway 配置
 	gwConfig := gateway.GatewayConfig{
-		OpenAIAPIKey:        s.config.OpenAI.APIKey,
-		OpenAIRealtimeURL:   s.config.OpenAI.RealtimeURL,
-		Model:               s.config.OpenAI.Model,
-		Voice:               s.config.OpenAI.Voice,
-		DefaultInstructions: s.config.Gateway.DefaultInstructions,
-		ReadTimeout:         30 * time.Second,
-		WriteTimeout:        30 * time.Second,
-		PingInterval:        s.config.Gateway.PingInterval,
-		InputAudioFormat:    s.config.Gateway.InputAudioFormat,
-		OutputAudioFormat:   s.config.Gateway.OutputAudioFormat,
+		OpenAIAPIKey:                 s.config.OpenAI.APIKey,
+		OpenAIRealtimeURL:            s.config.OpenAI.RealtimeURL,
+		Model:                        s.config.OpenAI.Model,
+		Voice:                        s.config.OpenAI.Voice,
+		DefaultInstructions:          s.config.Gateway.DefaultInstructions,
+		ReadTimeout:                  30 * time.Second,
+		WriteTimeout:                 30 * time.Second,
+		PingInterval:                 s.config.Gateway.PingInterval,
+		InputAudioFormat:             s.config.Gateway.InputAudioFormat,
+		OutputAudioFormat:            s.config.Gateway.OutputAudioFormat,
+		InputAudioTranscriptionModel: s.config.Gateway.InputAudioTranscriptionModel,
 	}
 	log.Printf("[API] Gateway config: model=%s voice=%s", gwConfig.Model, gwConfig.Voice)
 

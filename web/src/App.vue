@@ -67,6 +67,31 @@ const handleExit = () => {
   background: #000;
 }
 
+.test-button {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 1000;
+}
+
+.btn-test {
+  padding: 12px 24px;
+  background: #2196F3;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
+  transition: all 0.3s;
+}
+
+.btn-test:hover {
+  background: #1976D2;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(33, 150, 243, 0.4);
+}
+
 .portal-layer {
   position: fixed;
   inset: 0;

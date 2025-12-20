@@ -67,15 +67,16 @@ type RealtimeSessionUpdate struct {
 
 // RealtimeSessionConfig Realtime会话配置
 type RealtimeSessionConfig struct {
-	Modalities        []string             `json:"modalities,omitempty"`         // ["text", "audio"]
-	Instructions      string               `json:"instructions,omitempty"`       // System prompt
-	Voice             string               `json:"voice,omitempty"`              // alloy/echo/shimmer
-	InputAudioFormat  string               `json:"input_audio_format,omitempty"` // pcm16/g711_ulaw/g711_alaw
-	OutputAudioFormat string               `json:"output_audio_format,omitempty"`
-	TurnDetection     *TurnDetectionConfig `json:"turn_detection,omitempty"` // VAD配置
-	Tools             []interface{}        `json:"tools,omitempty"`          // Function calling（第一阶段不用）
-	Temperature       float64              `json:"temperature,omitempty"`
-	MaxTokens         int                  `json:"max_tokens,omitempty"`
+	Modalities              []string                       `json:"modalities,omitempty"`         // ["text", "audio"]
+	Instructions            string                         `json:"instructions,omitempty"`       // System prompt
+	Voice                   string                         `json:"voice,omitempty"`              // alloy/echo/shimmer
+	InputAudioFormat        string                         `json:"input_audio_format,omitempty"` // pcm16/g711_ulaw/g711_alaw
+	OutputAudioFormat       string                         `json:"output_audio_format,omitempty"`
+	TurnDetection           *TurnDetectionConfig           `json:"turn_detection,omitempty"` // VAD配置
+	InputAudioTranscription *InputAudioTranscriptionConfig `json:"input_audio_transcription,omitempty"`
+	Tools                   []interface{}                  `json:"tools,omitempty"` // Function calling（第一阶段不用）
+	Temperature             float64                        `json:"temperature,omitempty"`
+	MaxTokens               int                            `json:"max_tokens,omitempty"`
 }
 
 // TurnDetectionConfig VAD（语音活动检测）配置
@@ -84,6 +85,11 @@ type TurnDetectionConfig struct {
 	Threshold         float64 `json:"threshold,omitempty"`           // 0.0-1.0
 	PrefixPaddingMS   int     `json:"prefix_padding_ms,omitempty"`   // 开始前填充
 	SilenceDurationMS int     `json:"silence_duration_ms,omitempty"` // 静音多久算结束
+}
+
+// InputAudioTranscriptionConfig 控制输入音频转写
+type InputAudioTranscriptionConfig struct {
+	Model string `json:"model"` // "gpt-4o-mini-transcribe" 等
 }
 
 // RealtimeResponseCreate 创建回复指令（手动控制）

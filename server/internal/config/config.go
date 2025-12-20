@@ -38,10 +38,11 @@ type OpenAIConfig struct {
 }
 
 type GatewayConfig struct {
-	DefaultInstructions string        `yaml:"default_instructions"`
-	InputAudioFormat    string        `yaml:"input_audio_format"`
-	OutputAudioFormat   string        `yaml:"output_audio_format"`
-	PingInterval        time.Duration `yaml:"ping_interval"`
+	DefaultInstructions          string        `yaml:"default_instructions"`
+	InputAudioFormat             string        `yaml:"input_audio_format"`
+	OutputAudioFormat            string        `yaml:"output_audio_format"`
+	InputAudioTranscriptionModel string        `yaml:"input_audio_transcription_model"`
+	PingInterval                 time.Duration `yaml:"ping_interval"`
 }
 
 type DirectorConfig struct {
