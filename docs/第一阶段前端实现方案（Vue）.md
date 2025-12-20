@@ -1,7 +1,7 @@
 # BubbleTalk 第一阶段前端实现方案（Vue）
 
 > 语音优先 × 工具托盘 × 对话一等公民
-> 
+>
 > 以语音为默认交互；不做传统聊天列表，而是“圆桌舞台态”：发言人、字幕、工具卡片托盘（ToolTray）按剧情入场与退场，保持节奏与沉浸。会话事件以统一模型驱动（asr_final/quiz_answer/intent_hint/barge_in/exit_requested）。MVP-1 中语音轨与字幕由 OpenAI Realtime 直连（WebRTC），事件镜像与测评通过后端 HTTP 维持“事实源”与可验收。
 
 ---
@@ -206,3 +206,4 @@
   - `server/internal/api/server.go`：HTTP 契约、realtime/token、events 回包 DebugPayload。
   - `server/internal/model/types.go`：Bubble/SessionState/Event/DirectorPlan/DiagnoseSet。
   - `server/configs/bubbles.json`：固定泡泡配置。
+

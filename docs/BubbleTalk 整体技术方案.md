@@ -62,7 +62,15 @@
 1. **Actor Engine（演员生成）**
 
 - 输入 DirectorPlan + Beat 指令卡 + Concept Pack + 用户背景
-- 生成下一段“可朗读台词 + 用户动作提示 + 兜底问法”
+- 职责：构建 Prompt（提示词），包含角色人设、当前策略、用户状态、约束条件。
+- 输出：发给 GPT Realtime 的 System Instructions 或 Session Update。
+
+1. **Realtime Gateway（实时语音网关）**
+
+- 负责与 GPT Realtime API 建立连接。
+- 接收 Actor Engine 生成的 Prompt 并下发。
+- 处理音频流的双向传输（ASR/TTS）。
+- 处理插话中断（barge-in）信号。
 
 1. **Assessment Engine（测评与练习）**
 
