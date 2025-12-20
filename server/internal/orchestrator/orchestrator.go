@@ -2,8 +2,13 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"time"
 
+	"bubble-talk/server/internal/actor"
+	"bubble-talk/server/internal/director"
+	"bubble-talk/server/internal/gateway"
 	"bubble-talk/server/internal/model"
 	"bubble-talk/server/internal/session"
 	"bubble-talk/server/internal/timeline"
@@ -16,31 +21,224 @@ import (
 // - 决策集中：Director/Actor/Assessment 的裁决都应在此触发，避免分散到网关/前端。
 // - 输出可审计：助手输出与计划要写回 Timeline，以便验收/复盘。
 type Orchestrator struct {
-	store    session.Store
-	timeline timeline.Store
-	now      func() time.Time
+	store          session.Store
+	timeline       timeline.Store
+	directorEngine *director.DirectorEngine
+	actorEngine    *actor.ActorEngine
+	now            func() time.Time
+	logger         *log.Logger
 }
 
+// New 创建Orchestrator（兼容旧版本API）
 func New(store session.Store, timeline timeline.Store, now func() time.Time) *Orchestrator {
 	if now == nil {
 		now = time.Now
 	}
+
+	// 使用默认配置创建Director和Actor
+	directorEngine := director.NewDirectorEngine(nil, nil)
+	actorEngine, err := actor.NewActorEngine("configs/prompts")
+	if err != nil {
+		log.Printf("Warning: failed to create actor engine: %v, using nil", err)
+	}
+
 	return &Orchestrator{
-		store:    store,
-		timeline: timeline,
-		now:      now,
+		store:          store,
+		timeline:       timeline,
+		directorEngine: directorEngine,
+		actorEngine:    actorEngine,
+		now:            now,
+		logger:         log.Default(),
+	}
+}
+
+// NewWithEngines 创建Orchestrator并指定Director和Actor引擎
+func NewWithEngines(
+	store session.Store,
+	timeline timeline.Store,
+	directorEngine *director.DirectorEngine,
+	actorEngine *actor.ActorEngine,
+	logger *log.Logger,
+) *Orchestrator {
+	if logger == nil {
+		logger = log.Default()
+	}
+
+	return &Orchestrator{
+		store:          store,
+		timeline:       timeline,
+		directorEngine: directorEngine,
+		actorEngine:    actorEngine,
+		now:            time.Now,
+		logger:         logger,
 	}
 }
 
 // GetInitialInstructions 生成会话初始的 System Instructions。
-// 这是 ActorEngine 的一部分职责，用于初始化 GPT Realtime 的人设和目标。
-func (o *Orchestrator) GetInitialInstructions(state *model.SessionState) string {
-	// TODO: 这里应该调用 ActorEngine 的 PromptBuilder
-	// 目前先硬编码，但结构上已经解耦
-	return "你是 BubbleTalk 的语音教学助手。默认用中文、口语化、短句输出。" +
-		"本次泡泡主题：" + state.EntryID + "。当前主目标：" + state.MainObjective + "。" +
-		"对话规则：每 90 秒必须让用户完成一次输出动作（复述/选择/举例/迁移）。" +
-		"如果用户说“我懂了/结束”，必须立刻给出迁移检验（Exit Ticket）。"
+func (o *Orchestrator) GetInitialInstructions(_ context.Context, state *model.SessionState) (string, error) {
+	// 如果actorEngine未初始化，返回简单的默认指令
+	if o.actorEngine == nil {
+		return "你是 BubbleTalk 的语音教学助手。默认用中文、口语化、短句输出。", nil
+	}
+
+	// 创建一个初始的DirectorPlan
+	plan := o.directorEngine.Decide(state, "")
+
+	// 通过Actor Engine构建Prompt
+	req := actor.ActorRequest{
+		SessionID:     state.SessionID,
+		TurnID:        "initial",
+		Plan:          plan,
+		EntryID:       state.EntryID,
+		Domain:        state.Domain,
+		MainObjective: state.MainObjective,
+		ConceptName:   state.MainObjective,
+		LastUserText:  "",
+		Metaphor:      "",
+	}
+
+	prompt, err := o.actorEngine.BuildPrompt(req)
+	if err != nil {
+		o.logger.Printf("Failed to build initial prompt: %v", err)
+		// 使用兜底Prompt
+		prompt = o.actorEngine.BuildFallbackPrompt(req)
+	}
+
+	return prompt.Instructions, nil
+}
+
+// HandleUserUtterance 处理用户语音转写输入
+func (o *Orchestrator) HandleUserUtterance(ctx context.Context, sessionID string, text string, gw *gateway.Gateway) error {
+	o.logger.Printf("[Orchestrator] handling user utterance for session %s: %s", sessionID, text)
+
+	// 1. 获取当前会话状态
+	state, err := o.store.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+
+	// 2. 记录用户输入到Timeline
+	event := &model.Event{
+		EventID:   fmt.Sprintf("evt_%d", o.now().UnixNano()),
+		SessionID: sessionID,
+		Type:      "user_utterance",
+		Text:      text,
+		ClientTS:  o.now(),
+		ServerTS:  o.now(),
+	}
+	if _, err := o.timeline.Append(ctx, sessionID, event); err != nil {
+		o.logger.Printf("Failed to append timeline event: %v", err)
+	}
+
+	// 3. 调用Director生成计划
+	plan := o.directorEngine.Decide(state, text)
+
+	o.logger.Printf("[Orchestrator] Director plan: role=%s beat=%s action=%s",
+		plan.NextRole, plan.NextBeat, plan.OutputAction)
+
+	// 4. 记录Director计划到Timeline
+	planEvent := &model.Event{
+		EventID:      fmt.Sprintf("evt_%d", o.now().UnixNano()),
+		SessionID:    sessionID,
+		Type:         "director_plan",
+		ServerTS:     o.now(),
+		DirectorPlan: &plan,
+	}
+	if _, err := o.timeline.Append(ctx, sessionID, planEvent); err != nil {
+		o.logger.Printf("Failed to append plan event: %v", err)
+	}
+
+	// 5. 调用Actor生成Prompt
+	req := actor.ActorRequest{
+		SessionID:     sessionID,
+		TurnID:        event.EventID,
+		Plan:          plan,
+		EntryID:       state.EntryID,
+		Domain:        state.Domain,
+		MainObjective: state.MainObjective,
+		ConceptName:   state.MainObjective,
+		LastUserText:  text,
+		Metaphor:      "", // TODO: 从ConceptPack获取
+	}
+
+	prompt, err := o.actorEngine.BuildPrompt(req)
+	if err != nil {
+		o.logger.Printf("Failed to build prompt: %v", err)
+		prompt = o.actorEngine.BuildFallbackPrompt(req)
+	}
+
+	// 校验Prompt
+	if err := o.actorEngine.Validate(prompt); err != nil {
+		o.logger.Printf("Prompt validation failed: %v, using fallback", err)
+		prompt = o.actorEngine.BuildFallbackPrompt(req)
+	}
+
+	o.logger.Printf("[Orchestrator] Actor prompt generated, length=%d", len(prompt.Instructions))
+
+	// 6. 通过Gateway发送指令到Realtime
+	if gw != nil {
+		if err := gw.SendInstructions(ctx, prompt.Instructions, prompt.DebugInfo); err != nil {
+			return fmt.Errorf("send instructions: %w", err)
+		}
+		o.logger.Printf("[Orchestrator] Instructions sent to Realtime successfully")
+	}
+
+	// 7. 更新会话状态
+	state.LastUserUtterance = text
+	state.OutputClockSec += int(time.Since(state.UpdatedAt).Seconds())
+	state.UpdatedAt = o.now()
+
+	if err := o.store.Save(ctx, state); err != nil {
+		o.logger.Printf("Failed to update session: %v", err)
+	}
+
+	return nil
+}
+
+// HandleQuizAnswer 处理答题事件
+func (o *Orchestrator) HandleQuizAnswer(ctx context.Context, sessionID string, questionID string, answer string) error {
+	o.logger.Printf("[Orchestrator] quiz answer: session=%s question=%s answer=%s",
+		sessionID, questionID, answer)
+
+	// 记录到Timeline
+	event := &model.Event{
+		EventID:    fmt.Sprintf("evt_%d", o.now().UnixNano()),
+		SessionID:  sessionID,
+		Type:       "quiz_answer",
+		QuestionID: questionID,
+		Answer:     answer,
+		ServerTS:   o.now(),
+	}
+
+	if _, err := o.timeline.Append(ctx, sessionID, event); err != nil {
+		o.logger.Printf("Failed to append quiz answer: %v", err)
+	}
+
+	// TODO: 调用Assessment Engine评估答案
+	// TODO: 更新Learning Model
+
+	return nil
+}
+
+// HandleBargeIn 处理插话中断事件
+func (o *Orchestrator) HandleBargeIn(ctx context.Context, sessionID string) error {
+	o.logger.Printf("[Orchestrator] barge-in detected for session %s", sessionID)
+
+	// 记录到Timeline
+	event := &model.Event{
+		EventID:   fmt.Sprintf("evt_%d", o.now().UnixNano()),
+		SessionID: sessionID,
+		Type:      "barge_in",
+		ServerTS:  o.now(),
+	}
+
+	if _, err := o.timeline.Append(ctx, sessionID, event); err != nil {
+		o.logger.Printf("Failed to append barge-in event: %v", err)
+	}
+
+	// TODO: 更新会话状态（记录中断次数，调整紧张度）
+
+	return nil
 }
 
 // OnEvent 处理来自用户或系统的事件，更新会话状态并生成响应。

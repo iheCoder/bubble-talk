@@ -74,6 +74,20 @@ type SessionState struct {
 	Signals SignalsSnapshot `json:"signals"`
 	// 对话的历史轮次。
 	Turns []Turn `json:"turns"`
+
+	// 新增字段
+	LastUserUtterance string    `json:"last_user_utterance,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// TimelineEvent 时间线事件（用于Orchestrator）
+type TimelineEvent struct {
+	EventID   string                 `json:"event_id"`
+	SessionID string                 `json:"session_id"`
+	EventType string                 `json:"event_type"`
+	Timestamp time.Time              `json:"timestamp"`
+	Payload   map[string]interface{} `json:"payload"`
 }
 
 // Event 表示时间线中的一个事件。
