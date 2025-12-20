@@ -84,31 +84,51 @@ type PathsConfig struct {
 
 // Load 从文件加载配置
 func Load(path string) (*Config, error) {
+	fmt.Printf("📋 Loading config from: %s\n", path)
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config file: %w", err)
 	}
+	fmt.Printf("✅ Config file read successfully (%d bytes)\n", len(data))
 
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	fmt.Printf("✅ Config parsed successfully\n")
 
 	// 从环境变量覆盖敏感信息
 	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+		fmt.Printf("🔑 Using OPENAI_API_KEY from environment variable\n")
 		cfg.OpenAI.APIKey = apiKey
+	} else if cfg.OpenAI.APIKey != "" {
+		fmt.Printf("🔑 Using OPENAI_API_KEY from config file\n")
 	}
+
 	if model := os.Getenv("OPENAI_REALTIME_MODEL"); model != "" {
+		fmt.Printf("🤖 Using OPENAI_REALTIME_MODEL from environment: %s\n", model)
 		cfg.OpenAI.Model = model
 	}
 	if voice := os.Getenv("OPENAI_REALTIME_VOICE"); voice != "" {
+		fmt.Printf("🎤 Using OPENAI_REALTIME_VOICE from environment: %s\n", voice)
 		cfg.OpenAI.Voice = voice
 	}
+
+	// 打印关键配置
+	fmt.Printf("\n📊 Configuration Summary:\n")
+	fmt.Printf("   Server: %s:%d\n", cfg.Server.Host, cfg.Server.Port)
+	fmt.Printf("   OpenAI Model: %s\n", cfg.OpenAI.Model)
+	fmt.Printf("   OpenAI Voice: %s\n", cfg.OpenAI.Voice)
+	fmt.Printf("   Bubbles Path: %s\n", cfg.Paths.Bubbles)
+	fmt.Printf("   Prompts Dir: %s\n", cfg.Paths.Prompts)
+	fmt.Printf("\n")
 
 	// 验证必需配置
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
+	fmt.Printf("✅ Config validation passed\n\n")
 
 	return &cfg, nil
 }

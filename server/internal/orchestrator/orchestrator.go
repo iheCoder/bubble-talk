@@ -37,9 +37,12 @@ func New(store session.Store, timeline timeline.Store, now func() time.Time) *Or
 
 	// 使用默认配置创建Director和Actor
 	directorEngine := director.NewDirectorEngine(nil, nil)
-	actorEngine, err := actor.NewActorEngine("configs/prompts")
+	actorEngine, err := actor.NewActorEngine("server/configs/prompts")
 	if err != nil {
-		log.Printf("Warning: failed to create actor engine: %v, using nil", err)
+		log.Printf("❌ Warning: failed to create actor engine: %v, using nil", err)
+		log.Printf("💡 Hint: Make sure to run from project root directory")
+	} else {
+		log.Printf("✅ ActorEngine initialized successfully")
 	}
 
 	return &Orchestrator{

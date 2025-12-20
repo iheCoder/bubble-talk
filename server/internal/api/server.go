@@ -1,13 +1,17 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
+	"bubble-talk/server/internal/config"
 	"bubble-talk/server/internal/domain"
+	"bubble-talk/server/internal/gateway"
 	"bubble-talk/server/internal/model"
 	"bubble-talk/server/internal/orchestrator"
 	"bubble-talk/server/internal/realtime"
@@ -15,34 +19,52 @@ import (
 	"bubble-talk/server/internal/timeline"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 )
 
 type Server struct {
+	config       *config.Config
 	store        session.Store
 	timeline     timeline.Store
 	bubbles      []model.Bubble
 	now          func() time.Time
 	orchestrator *orchestrator.Orchestrator
 
+	// gateways 管理所有活跃的语音网关 (sessionID -> Gateway)
+	gateways   map[string]*gateway.Gateway
+	gatewaysMu sync.RWMutex
+
 	// realtimeClient 只用于签发 OpenAI Realtime 的 ephemeral key，
 	// 让浏览器用 WebRTC 直连 OpenAI（语音原生），同时不暴露服务端 API Key。
 	realtimeClient *realtime.Client
+
+	// WebSocket upgrader
+	upgrader websocket.Upgrader
 }
 
-func NewServer(store session.Store, timeline timeline.Store, bubblesPath string) (*Server, error) {
-	bubbles, err := domain.LoadBubbles(bubblesPath)
+func NewServer(cfg *config.Config, store session.Store, timeline timeline.Store) (*Server, error) {
+	bubbles, err := domain.LoadBubbles(cfg.Paths.Bubbles)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Server{
+		config:       cfg,
 		store:        store,
 		timeline:     timeline,
 		bubbles:      bubbles,
 		now:          time.Now,
 		orchestrator: orchestrator.New(store, timeline, time.Now),
+		gateways:     make(map[string]*gateway.Gateway),
 		realtimeClient: &realtime.Client{
-			APIKey: os.Getenv("OPENAI_API_KEY"),
+			APIKey: cfg.OpenAI.APIKey,
+		},
+		upgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				// 开发期允许本地跨域，生产环境应改为白名单
+				origin := r.Header.Get("Origin")
+				return origin == "http://localhost:5173" || origin == "http://127.0.0.1:5173"
+			},
 		},
 	}, nil
 }
@@ -55,6 +77,7 @@ func (s *Server) Routes() http.Handler {
 	engine.GET("/api/bubbles", s.handleBubbles)
 	engine.POST("/api/sessions", s.handleSessions)
 	engine.POST("/api/sessions/:id/events", s.handleSessionEvents)
+	engine.GET("/api/sessions/:id/stream", s.handleSessionStream)
 	engine.POST("/api/sessions/:id/realtime/token", s.handleRealtimeToken)
 	return engine
 }
@@ -149,6 +172,153 @@ func (s *Server) handleSessionEvents(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// handleSessionStream 处理 WebSocket 连接，创建 Gateway 并启动双向语音流
+func (s *Server) handleSessionStream(c *gin.Context) {
+	sessionID := c.Param("id")
+	log.Printf("[API] 📞 WebSocket connection request for session: %s", sessionID)
+	log.Printf("[API] Client address: %s", c.Request.RemoteAddr)
+	log.Printf("[API] Origin: %s", c.Request.Header.Get("Origin"))
+
+	// 验证 Session 存在
+	state, err := s.store.Get(c.Request.Context(), sessionID)
+	if err != nil {
+		if err == session.ErrNotFound {
+			log.Printf("[API] ❌ Session not found: %s", sessionID)
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		log.Printf("[API] ❌ Failed to load session %s: %v", sessionID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "load session failed"})
+		return
+	}
+	log.Printf("[API] ✅ Session validated: entry_id=%s domain=%s", state.EntryID, state.Domain)
+
+	// 升级到 WebSocket
+	log.Printf("[API] Upgrading to WebSocket...")
+	clientConn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("[API] ❌ Failed to upgrade websocket: %v", err)
+		return
+	}
+	log.Printf("[API] ✅ WebSocket upgraded successfully")
+
+	// 创建 Gateway 配置
+	gwConfig := gateway.GatewayConfig{
+		OpenAIAPIKey:        s.config.OpenAI.APIKey,
+		OpenAIRealtimeURL:   s.config.OpenAI.RealtimeURL,
+		Model:               s.config.OpenAI.Model,
+		Voice:               s.config.OpenAI.Voice,
+		DefaultInstructions: s.config.Gateway.DefaultInstructions,
+		ReadTimeout:         30 * time.Second,
+		WriteTimeout:        30 * time.Second,
+		PingInterval:        s.config.Gateway.PingInterval,
+		InputAudioFormat:    s.config.Gateway.InputAudioFormat,
+		OutputAudioFormat:   s.config.Gateway.OutputAudioFormat,
+	}
+	log.Printf("[API] Gateway config: model=%s voice=%s", gwConfig.Model, gwConfig.Voice)
+
+	// 创建 Gateway 实例
+	log.Printf("[API] Creating Gateway instance...")
+	gw := gateway.NewGateway(sessionID, clientConn, gwConfig)
+
+	// 设置事件处理器：将 Gateway 事件转发给 Orchestrator
+	gw.SetEventHandler(func(ctx context.Context, msg *gateway.ClientMessage) error {
+		return s.handleGatewayEvent(ctx, sessionID, gw, msg)
+	})
+
+	// 注册到活跃网关表
+	s.gatewaysMu.Lock()
+	s.gateways[sessionID] = gw
+	gatewayCount := len(s.gateways)
+	s.gatewaysMu.Unlock()
+	log.Printf("[API] Gateway registered (total active: %d)", gatewayCount)
+
+	// 清理函数
+	defer func() {
+		s.gatewaysMu.Lock()
+		delete(s.gateways, sessionID)
+		remaining := len(s.gateways)
+		s.gatewaysMu.Unlock()
+		_ = gw.Close()
+		log.Printf("[API] 🔌 Gateway closed for session %s (remaining: %d)", sessionID, remaining)
+	}()
+
+	// 获取初始指令
+	log.Printf("[API] Getting initial instructions from Orchestrator...")
+	instructions, err := s.orchestrator.GetInitialInstructions(c.Request.Context(), state)
+	if err != nil {
+		log.Printf("[API] ⚠️  Failed to get initial instructions: %v, using fallback", err)
+		instructions = gwConfig.DefaultInstructions
+	} else {
+		log.Printf("[API] ✅ Initial instructions generated (%d chars)", len(instructions))
+	}
+
+	// 更新 Gateway 配置中的指令
+	gwConfig.DefaultInstructions = instructions
+
+	// 启动 Gateway（连接 OpenAI Realtime）
+	log.Printf("[API] Starting Gateway...")
+	ctx := context.Background()
+	if err := gw.Start(ctx); err != nil {
+		log.Printf("[API] ❌ Failed to start gateway: %v", err)
+		_ = clientConn.Close()
+		return
+	}
+
+	log.Printf("[API] ✅ Gateway started successfully for session %s", sessionID)
+	log.Printf("[API] 🎙️  Ready for audio streaming...")
+
+	// 阻塞直到连接关闭
+	<-gw.Done()
+	log.Printf("[API] Gateway connection closed for session %s", sessionID)
+}
+
+// handleGatewayEvent 处理来自 Gateway 的事件
+func (s *Server) handleGatewayEvent(ctx context.Context, sessionID string, gw *gateway.Gateway, msg *gateway.ClientMessage) error {
+	log.Printf("[API] gateway event: session=%s type=%s", sessionID, msg.Type)
+
+	switch msg.Type {
+	case gateway.EventTypeASRFinal:
+		// 用户语音转写完成，交给 Orchestrator 处理
+		return s.orchestrator.HandleUserUtterance(ctx, sessionID, msg.Text, gw)
+
+	case gateway.EventTypeQuizAnswer:
+		// 用户答题
+		return s.orchestrator.HandleQuizAnswer(ctx, sessionID, msg.QuestionID, msg.Answer)
+
+	case gateway.EventTypeBargeIn:
+		// 用户插话中断，记录事件即可（Gateway 已处理取消逻辑）
+		event := &model.Event{
+			EventID:   fmt.Sprintf("evt_%d", time.Now().UnixNano()),
+			SessionID: sessionID,
+			Type:      "barge_in",
+			ClientTS:  msg.ClientTS,
+			ServerTS:  time.Now(),
+		}
+		_, err := s.timeline.Append(ctx, sessionID, event)
+		return err
+
+	case gateway.EventTypeExitRequested:
+		// 用户请求退出
+		event := &model.Event{
+			EventID:   fmt.Sprintf("evt_%d", time.Now().UnixNano()),
+			SessionID: sessionID,
+			Type:      "exit_requested",
+			ClientTS:  msg.ClientTS,
+			ServerTS:  time.Now(),
+		}
+		if _, err := s.timeline.Append(ctx, sessionID, event); err != nil {
+			return err
+		}
+		// TODO: 触发 EXIT_TICKET 流程
+		return nil
+
+	default:
+		log.Printf("[API] unhandled gateway event type: %s", msg.Type)
+		return nil
+	}
+}
+
 type realtimeTokenResponse struct {
 	Model        string `json:"model"`
 	Voice        string `json:"voice"`
@@ -183,10 +353,14 @@ func (s *Server) handleRealtimeToken(c *gin.Context) {
 		voice = "alloy"
 	}
 
-	// 注意：这里的 instructions 只是第一阶段的“最小可用”，
+	// 注意：这里的 instructions 只是第一阶段的"最小可用"，
 	// 后续应改为：Orchestrator/Director 每轮动态更新（session.update）。
 	// 使用 Orchestrator 获取初始指令，确保与 ActorEngine 逻辑一致
-	instructions := s.orchestrator.GetInitialInstructions(state)
+	instructions, err := s.orchestrator.GetInitialInstructions(c.Request.Context(), state)
+	if err != nil {
+		log.Printf("failed to get initial instructions: %v, using fallback", err)
+		instructions = "你是 BubbleTalk 的语音教学助手。用中文、口语化、短句输出。"
+	}
 
 	keyResp, err := s.realtimeClient.CreateEphemeralKey(c.Request.Context(), realtime.CreateSessionRequest{
 		Model:        modelName,
