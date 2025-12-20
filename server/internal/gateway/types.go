@@ -88,7 +88,8 @@ type TurnDetectionConfig struct {
 	SilenceDurationMS int     `json:"silence_duration_ms,omitempty"` // 静音多久算结束
 	// CreateResponse 控制 server_vad 检测到用户说完后，是否由 Realtime 自动创建 response。
 	// 我们的产品需要导演/演员控制输出，因此必须关闭自动创建，避免“抢答/乱序/双声道”。
-	CreateResponse bool `json:"create_response,omitempty"`
+	// 注意：不能用 omitempty，否则 false 会被省略，Realtime 会按默认值自动创建 response。
+	CreateResponse bool `json:"create_response"`
 }
 
 // InputAudioTranscriptionConfig 控制输入音频转写
