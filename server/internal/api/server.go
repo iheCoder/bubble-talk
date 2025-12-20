@@ -185,14 +185,8 @@ func (s *Server) handleRealtimeToken(c *gin.Context) {
 
 	// 注意：这里的 instructions 只是第一阶段的“最小可用”，
 	// 后续应改为：Orchestrator/Director 每轮动态更新（session.update）。
-	instructions := fmt.Sprintf(
-		"你是 BubbleTalk 的语音教学助手。默认用中文、口语化、短句输出。"+
-			"本次泡泡主题：%s。当前主目标：%s。"+
-			"对话规则：每 90 秒必须让用户完成一次输出动作（复述/选择/举例/迁移）。"+
-			"如果用户说“我懂了/结束”，必须立刻给出迁移检验（Exit Ticket）。",
-		state.EntryID,
-		state.MainObjective,
-	)
+	// 使用 Orchestrator 获取初始指令，确保与 ActorEngine 逻辑一致
+	instructions := s.orchestrator.GetInitialInstructions(state)
 
 	keyResp, err := s.realtimeClient.CreateEphemeralKey(c.Request.Context(), realtime.CreateSessionRequest{
 		Model:        modelName,
