@@ -18,6 +18,7 @@ const (
 
 	// 工具/控制事件
 	EventTypeQuizAnswer    EventType = "quiz_answer"    // 答题
+	EventTypeQuizShow      EventType = "quiz_show"      // 展示选择题（服务端→客户端）
 	EventTypeBargeIn       EventType = "barge_in"       // 插话中断
 	EventTypeExitRequested EventType = "exit_requested" // 退出请求
 	EventTypeWorldEntered  EventType = "world_entered"  // 进入World，触发导演主动开场
@@ -47,9 +48,18 @@ type ServerMessage struct {
 	TurnID    string                 `json:"turn_id,omitempty"`    // 轮次关联
 	Text      string                 `json:"text,omitempty"`       // 文本内容
 	AudioData []byte                 `json:"audio_data,omitempty"` // 音频数据（Base64编码）
+	QuizData  *QuizMessageData       `json:"quiz_data,omitempty"`  // 选择题数据
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`   // 扩展字段
 	ServerTS  time.Time              `json:"server_ts"`            // 服务端时间戳
 	Error     string                 `json:"error,omitempty"`      // 错误信息
+}
+
+// QuizMessageData 选择题消息数据
+type QuizMessageData struct {
+	QuizID   string   `json:"quiz_id"`  // 题目ID
+	Question string   `json:"question"` // 题目文本
+	Options  []string `json:"options"`  // 选项列表
+	Context  string   `json:"context"`  // 上下文（可选）
 }
 
 // RealtimeEvent OpenAI Realtime API 事件（WebSocket双向通信）

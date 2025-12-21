@@ -103,6 +103,10 @@ export class BubbleTalkGateway {
         case 'speech_stopped':
           if (this.onSpeechStopped) this.onSpeechStopped();
           break;
+        case 'quiz_show':
+          console.log('[Gateway] Quiz received:', message.quiz_data);
+          if (this.onQuizShow) this.onQuizShow(message.quiz_data);
+          break;
         default:
           console.log('[Gateway] Unhandled event type:', message.type);
       }
@@ -273,27 +277,6 @@ export class BubbleTalkGateway {
   }
 
   /**
-   * 发送答题事件
-   */
-  sendQuizAnswer(questionId, answer) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.error('[Gateway] WebSocket not connected');
-      return;
-    }
-
-    const message = {
-      type: 'quiz_answer',
-      event_id: `evt_${Date.now()}`,
-      question_id: questionId,
-      answer: answer,
-      client_ts: new Date().toISOString()
-    };
-
-    console.log('[Gateway] Sending quiz answer:', message);
-    this.ws.send(JSON.stringify(message));
-  }
-
-  /**
    * 发送插话中断事件
    */
   sendBargeIn() {
@@ -348,6 +331,27 @@ export class BubbleTalkGateway {
     };
 
     console.log('[Gateway] Sending world_entered:', message);
+    this.ws.send(JSON.stringify(message));
+  }
+
+  /**
+   * 发送用户的答题结果
+   */
+  sendQuizAnswer(quizId, answer) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.error('[Gateway] WebSocket not connected');
+      return;
+    }
+
+    const message = {
+      type: 'quiz_answer',
+      event_id: `evt_${Date.now()}`,
+      question_id: quizId,
+      answer: answer,
+      client_ts: new Date().toISOString()
+    };
+
+    console.log('[Gateway] Sending quiz answer:', message);
     this.ws.send(JSON.stringify(message));
   }
 

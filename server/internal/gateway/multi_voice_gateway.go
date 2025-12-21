@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"bubble-talk/server/internal/tool"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -29,6 +31,9 @@ type MultiVoiceGateway struct {
 
 	// 事件处理器（由 Orchestrator 注入）
 	eventHandler EventHandler
+
+	// 工具注册表（支持function calling）
+	toolRegistry *tool.ToolRegistry
 
 	// 状态管理
 	ctx       context.Context
@@ -69,6 +74,15 @@ func NewMultiVoiceGateway(sessionID string, clientConn *websocket.Conn, config G
 // SetEventHandler 设置事件处理器（Orchestrator 注入）
 func (g *MultiVoiceGateway) SetEventHandler(handler EventHandler) {
 	g.eventHandler = handler
+}
+
+// SetToolRegistry 设置工具注册表
+func (g *MultiVoiceGateway) SetToolRegistry(registry *tool.ToolRegistry) {
+	g.toolRegistry = registry
+	// 如果音色池已经初始化，传递给所有角色连接
+	if g.voicePool != nil {
+		g.voicePool.SetToolRegistry(registry)
+	}
 }
 
 // Start 启动网关
@@ -578,6 +592,24 @@ func (g *MultiVoiceGateway) sendTTSCompletedToClient(role string) {
 		},
 		ServerTS: time.Now(),
 	})
+}
+
+// SendQuizToClient 发送选择题到客户端
+func (g *MultiVoiceGateway) SendQuizToClient(quizID, question string, options []string, context string) error {
+	g.logger.Printf("[MultiVoiceGateway] 📤 Sending quiz to client: quiz_id=%s", quizID)
+
+	msg := &ServerMessage{
+		Type: EventTypeQuizShow,
+		QuizData: &QuizMessageData{
+			QuizID:   quizID,
+			Question: question,
+			Options:  options,
+			Context:  context,
+		},
+		ServerTS: time.Now(),
+	}
+
+	return g.sendToClient(msg)
 }
 
 // Close 关闭网关

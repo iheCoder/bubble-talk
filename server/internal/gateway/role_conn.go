@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"bubble-talk/server/internal/tool"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -23,6 +25,9 @@ type RoleConn struct {
 	// 当前活跃的响应ID（用于插话中断）
 	activeResponseID     string
 	activeResponseIDLock sync.RWMutex
+
+	// 工具注册表
+	toolRegistry *tool.ToolRegistry
 
 	// 连接状态
 	ctx       context.Context
@@ -281,6 +286,12 @@ func (rc *RoleConn) ClearActiveResponse() {
 	rc.activeResponseIDLock.Lock()
 	rc.activeResponseID = ""
 	rc.activeResponseIDLock.Unlock()
+}
+
+// SetToolRegistry 设置工具注册表
+func (rc *RoleConn) SetToolRegistry(registry *tool.ToolRegistry) {
+	rc.toolRegistry = registry
+	rc.logger.Printf("[RoleConn:%s] Tool registry set", rc.role)
 }
 
 // Close 关闭连接

@@ -75,18 +75,13 @@ const connectionError = ref('')
 // 转写（仅用于控制流；不做 UI 回显）
 const partialTranscript = ref('')
 
-// 诊断题目
+// Quiz相关状态
+const currentQuiz = ref(null) // 当前显示的quiz
+const quizHistory = ref([]) // 答题历史
+
+// 诊断题目（废弃，现在由LLM动态生成）
 const diagnose = ref({
-  questions: [
-    {
-      prompt: '周末加班800元，你会选择哪个？',
-      options: [
-        'A. 赚钱，毕竟800块不少',
-        'B. 休息，健康更重要',
-        'C. 看情况，要考虑很多因素'
-      ]
-    }
-  ]
+  questions: []
 })
 
 const isRealtimeConnected = computed(() => isConnected.value)
@@ -232,6 +227,19 @@ const connect = async () => {
       void beat
     }
 
+    // 接收Quiz - 显示选择题
+    gateway.value.onQuizShow = (quizData) => {
+      console.log('[WorldView] 📝 收到选择题:', quizData)
+      currentQuiz.value = {
+        quiz_id: quizData.quiz_id,
+        question: quizData.question,
+        options: quizData.options,
+        context: quizData.context
+      }
+      toolState.value = 'visible' // 显示工具面板
+      selectedOption.value = null // 清空之前的选择
+    }
+
     // 错误处理
     gateway.value.onError = (error) => {
       connectionError.value = error.message
@@ -305,6 +313,37 @@ const handleDisconnect = () => {
   emit('exit-world')
 }
 
+// 处理用户答题
+const handleQuizAnswer = (optionIndex) => {
+  if (!currentQuiz.value || !gateway.value) return
+
+  const answer = currentQuiz.value.options[optionIndex]
+  selectedOption.value = optionIndex
+
+  console.log('[WorldView] 用户选择:', answer)
+
+  // 发送答题结果到后端
+  gateway.value.sendQuizAnswer(currentQuiz.value.quiz_id, answer)
+
+  // 保存到历史
+  quizHistory.value.push({
+    quiz_id: currentQuiz.value.quiz_id,
+    question: currentQuiz.value.question,
+    answer: answer,
+    timestamp: new Date()
+  })
+
+  // 标记为已完成
+  toolState.value = 'resolved'
+
+  // 3秒后隐藏
+  setTimeout(() => {
+    toolState.value = 'hidden'
+    currentQuiz.value = null
+    selectedOption.value = null
+  }, 3000)
+}
+
 onMounted(() => {
   connect()
 })
@@ -346,6 +385,7 @@ onBeforeUnmount(() => {
       :active-role="activeRole"
       :is-assistant-speaking="isAssistantSpeaking"
       :is-thinking="isThinking"
+      :current-quiz="currentQuiz"
       :diagnose="diagnose"
       :tool-visible="toolVisible"
       :tool-resolved="toolResolved"
@@ -354,6 +394,7 @@ onBeforeUnmount(() => {
       :is-mic-active="isMicActive"
       @toggle-mute="toggleMute"
       @hangup="handleDisconnect"
+      @answer-quiz="handleQuizAnswer"
     />
 
     <WorldFooter v-model:input="input" @send="handleSend" />

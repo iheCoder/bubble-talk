@@ -6,6 +6,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"bubble-talk/server/internal/tool"
 )
 
 // VoicePool 管理多个角色连接（每个角色一个固定音色的 Realtime 连接）
@@ -31,6 +33,9 @@ type VoicePool struct {
 	// 对话历史（用于文本镜像同步）
 	conversationHistory   []ConversationTurn
 	conversationHistoryMu sync.RWMutex
+
+	// 工具注册表
+	toolRegistry *tool.ToolRegistry
 
 	// 配置
 	config VoicePoolConfig
@@ -359,6 +364,29 @@ func (vp *VoicePool) GetConversationHistory() []ConversationTurn {
 	history := make([]ConversationTurn, len(vp.conversationHistory))
 	copy(history, vp.conversationHistory)
 	return history
+}
+
+// SetToolRegistry 设置工具注册表，并传递给所有已创建的角色连接
+func (vp *VoicePool) SetToolRegistry(registry *tool.ToolRegistry) {
+	vp.toolRegistry = registry
+
+	// 传递给所有已创建的角色连接
+	vp.roleConnsMu.RLock()
+	defer vp.roleConnsMu.RUnlock()
+
+	for role, conn := range vp.roleConns {
+		if conn != nil {
+			conn.SetToolRegistry(registry)
+			vp.logf("[VoicePool:%s] Tool registry set for role %s", vp.sessionID, role)
+		}
+	}
+
+	// 也传递给 ASR 连接（虽然它不会用到，但保持一致性）
+	vp.asrConnMu.RLock()
+	if vp.asrConn != nil {
+		vp.asrConn.SetToolRegistry(registry)
+	}
+	vp.asrConnMu.RUnlock()
 }
 
 // Close 关闭所有连接

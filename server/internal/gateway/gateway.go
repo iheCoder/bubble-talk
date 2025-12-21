@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"bubble-talk/server/internal/tool"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -44,6 +46,9 @@ type Gateway struct {
 
 	// 事件处理器（由Orchestrator注入）
 	eventHandler EventHandler
+
+	// 工具注册表（支持function calling）
+	toolRegistry *tool.ToolRegistry
 
 	// 状态管理
 	ctx       context.Context
@@ -496,6 +501,14 @@ func (g *Gateway) handleRealtimeEvent(data []byte) error {
 	case "response.output_item.done":
 		// 输出项结束（当前不需要处理）
 		return nil
+
+	case "response.function_call_arguments.delta":
+		// Function call arguments streaming
+		return g.handleFunctionCallArgumentsDelta(data)
+
+	case "response.function_call_arguments.done":
+		// Function call arguments完成
+		return g.handleFunctionCallArgumentsDone(data)
 
 	case "error":
 		// 错误事件
@@ -1217,6 +1230,103 @@ func (g *Gateway) closeRealtimeConn() error {
 	err := g.realtimeConn.Close()
 	g.realtimeConn = nil
 	return err
+}
+
+// handleFunctionCallArgumentsDelta 处理function call arguments streaming
+func (g *Gateway) handleFunctionCallArgumentsDelta(data []byte) error {
+	var event struct {
+		Type        string `json:"type"`
+		ResponseID  string `json:"response_id"`
+		ItemID      string `json:"item_id"`
+		OutputIndex int    `json:"output_index"`
+		CallID      string `json:"call_id"`
+		Delta       string `json:"delta"`
+	}
+
+	if err := json.Unmarshal(data, &event); err != nil {
+		return err
+	}
+
+	g.logger.Printf("[Gateway] 🔧 Function call arguments delta: call_id=%s delta=%s", event.CallID, event.Delta)
+	return nil
+}
+
+// handleFunctionCallArgumentsDone 处理function call完成并执行工具
+func (g *Gateway) handleFunctionCallArgumentsDone(data []byte) error {
+	var event struct {
+		Type        string `json:"type"`
+		ResponseID  string `json:"response_id"`
+		ItemID      string `json:"item_id"`
+		OutputIndex int    `json:"output_index"`
+		CallID      string `json:"call_id"`
+		Name        string `json:"name"`
+		Arguments   string `json:"arguments"`
+	}
+
+	if err := json.Unmarshal(data, &event); err != nil {
+		return err
+	}
+
+	g.logger.Printf("[Gateway] 🔧 Function call completed: name=%s call_id=%s args=%s",
+		event.Name, event.CallID, event.Arguments)
+
+	// 执行工具
+	if g.toolRegistry == nil {
+		g.logger.Printf("[Gateway] ⚠️ Tool registry not set, cannot execute function call")
+		return nil
+	}
+
+	result, err := g.toolRegistry.Execute(g.ctx, event.Name, event.Arguments)
+	if err != nil {
+		g.logger.Printf("[Gateway] ❌ Tool execution failed: %v", err)
+		result = fmt.Sprintf(`{"status":"error","message":"%s"}`, err.Error())
+	}
+
+	g.logger.Printf("[Gateway] ✅ Tool executed successfully: %s", result)
+
+	// 发送function_call_output回到Realtime
+	if err := g.sendFunctionCallOutput(event.CallID, result); err != nil {
+		g.logger.Printf("[Gateway] ❌ Failed to send function call output: %v", err)
+		return err
+	}
+
+	return nil
+}
+
+// sendFunctionCallOutput 发送function call执行结果到Realtime
+func (g *Gateway) sendFunctionCallOutput(callID, output string) error {
+	// 创建conversation item with function_call_output
+	item := map[string]interface{}{
+		"type": "conversation.item.create",
+		"item": map[string]interface{}{
+			"type":    "function_call_output",
+			"call_id": callID,
+			"output":  output,
+		},
+	}
+
+	if err := g.sendToRealtime(item); err != nil {
+		return fmt.Errorf("send function_call_output: %w", err)
+	}
+
+	g.logger.Printf("[Gateway] 📤 Sent function_call_output for call_id=%s", callID)
+	return nil
+}
+
+// SendQuizToClient 发送选择题到客户端
+func (g *Gateway) SendQuizToClient(quizID, question string, options []string, context string) error {
+	msg := &ServerMessage{
+		Type: EventTypeQuizShow,
+		QuizData: &QuizMessageData{
+			QuizID:   quizID,
+			Question: question,
+			Options:  options,
+			Context:  context,
+		},
+		ServerTS: time.Now(),
+	}
+
+	return g.sendToClient(msg)
 }
 
 // Done returns a channel that's closed when the gateway is closed

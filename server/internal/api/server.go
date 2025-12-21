@@ -17,6 +17,7 @@ import (
 	"bubble-talk/server/internal/realtime"
 	"bubble-talk/server/internal/session"
 	"bubble-talk/server/internal/timeline"
+	"bubble-talk/server/internal/tool"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -261,6 +262,25 @@ func (s *Server) handleSessionStream(c *gin.Context) {
 	gw.SetEventHandler(func(ctx context.Context, msg *gateway.ClientMessage) error {
 		return s.handleGatewayEvent(ctx, sessionID, gw, msg)
 	})
+
+	// 初始化工具注册表并注册选择题工具
+	log.Printf("[API] Initializing tool registry...")
+	toolRegistry := tool.NewToolRegistry()
+
+	// 创建选择题工具，当工具被调用时，发送quiz到前端
+	quizTool := tool.NewQuizTool(func(quiz tool.QuizData) {
+		log.Printf("[API] Quiz tool invoked: quiz_id=%s question=%s", quiz.QuizID, quiz.Question)
+		// 发送quiz到客户端
+		if err := gw.SendQuizToClient(quiz.QuizID, quiz.Question, quiz.Options, quiz.Context); err != nil {
+			log.Printf("[API] ❌ Failed to send quiz to client: %v", err)
+		}
+
+	})
+	toolRegistry.Register(quizTool)
+
+	// 设置工具注册表到网关
+	gw.SetToolRegistry(toolRegistry)
+	log.Printf("[API] ✅ Tool registry initialized with %d tools", 1)
 
 	// 注册到活跃网关表
 	s.gatewaysMu.Lock()
