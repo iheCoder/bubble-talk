@@ -56,6 +56,15 @@ type SessionState struct {
 	// 当前对话的角色设定。
 	PacingMode string `json:"pacing_mode"`
 
+	// 剧本状态（新增）
+	Script *ScriptState `json:"script,omitempty"`
+
+	// 当前片段状态（新增）
+	CurrentSegment *SegmentSnapshot `json:"current_segment,omitempty"`
+
+	// 叙事倾向（新增）
+	NarrativeTilt *NarrativeTilt `json:"narrative_tilt,omitempty"`
+
 	// 用户的知识掌握情况。
 	MasteryEstimate float64 `json:"mastery_estimate"`
 	// 用户可能存在的误解标签。
@@ -65,6 +74,8 @@ type SessionState struct {
 	OutputClockSec int `json:"output_clock_sec"`
 	// 上次输出时间戳。
 	LastOutputAt time.Time `json:"last_output_at"`
+	// 上次有效输出时间（新增，用于判断是否需要强制窗口）
+	LastEffectiveOutputSec int `json:"last_effective_output_sec,omitempty"`
 
 	// 用户的心理状态指标。
 	TensionLevel int `json:"tension_level"`
