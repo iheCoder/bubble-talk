@@ -75,6 +75,10 @@ func (g *MultiVoiceGateway) SetEventHandler(handler EventHandler) {
 func (g *MultiVoiceGateway) Start(ctx context.Context) error {
 	g.logger.Printf("[MultiVoiceGateway] Starting gateway for session %s", g.sessionID)
 
+	if g.clientConn == nil {
+		return fmt.Errorf("clientConn is nil")
+	}
+
 	// 1. 创建音色池
 	g.logger.Printf("[MultiVoiceGateway] Creating voice pool...")
 	roleVoices := make(map[string]string)
@@ -209,16 +213,22 @@ func (g *MultiVoiceGateway) handleBargeIn(msg *ClientMessage) error {
 // forwardToOrchestrator 转发事件给 Orchestrator
 func (g *MultiVoiceGateway) forwardToOrchestrator(msg *ClientMessage) error {
 	if g.eventHandler == nil {
-		g.logger.Printf("[MultiVoiceGateway] no event handler set, dropping event: %s", msg.Type)
+		g.logger.Printf("[MultiVoiceGateway] ⚠️  no event handler set, dropping event: %s", msg.Type)
 		return nil
 	}
+
+	g.logger.Printf("[MultiVoiceGateway] Forwarding event to Orchestrator: type=%s text=%s", msg.Type, msg.Text)
 
 	go func() {
 		ctx, cancel := context.WithTimeout(g.ctx, 10*time.Second)
 		defer cancel()
 
 		if err := g.eventHandler(ctx, msg); err != nil {
-			g.logger.Printf("[MultiVoiceGateway] orchestrator handler error: %v", err)
+			g.logger.Printf("[MultiVoiceGateway] ❌ Orchestrator handler error: %v", err)
+			// 发送错误给客户端
+			g.sendErrorToClient(fmt.Sprintf("Orchestrator error: %v", err))
+		} else {
+			g.logger.Printf("[MultiVoiceGateway] ✅ Orchestrator handled event successfully")
 		}
 	}()
 
@@ -322,7 +332,7 @@ func (g *MultiVoiceGateway) roleConnsReadLoop() {
 
 // roleConnReadLoop 从指定角色连接读取消息
 func (g *MultiVoiceGateway) roleConnReadLoop(role string) {
-	conn, err := g.voicePool.GetRoleConn(role)
+	conn, err := g.voicePool.GetRoleConn(g.ctx, role)
 	if err != nil {
 		g.logger.Printf("[MultiVoiceGateway] ❌ Failed to get role conn for %s: %v", role, err)
 		return
@@ -365,7 +375,7 @@ func (g *MultiVoiceGateway) handleRoleConnEvent(role string, data []byte) error 
 	case "response.created":
 		// 响应创建
 		responseID, _ := event["response"].(map[string]interface{})["id"].(string)
-		conn, _ := g.voicePool.GetRoleConn(role)
+		conn, _ := g.voicePool.GetRoleConn(g.ctx, role)
 		if conn != nil {
 			conn.SetActiveResponse(responseID)
 		}
@@ -416,7 +426,7 @@ func (g *MultiVoiceGateway) handleResponseDone(role string, event map[string]int
 	g.logger.Printf("[MultiVoiceGateway] Role %s response done", role)
 
 	// 清除活跃响应
-	conn, _ := g.voicePool.GetRoleConn(role)
+	conn, _ := g.voicePool.GetRoleConn(g.ctx, role)
 	if conn != nil {
 		conn.ClearActiveResponse()
 	}
@@ -464,10 +474,12 @@ func (g *MultiVoiceGateway) SendInstructions(ctx context.Context, instructions s
 	// 从 metadata 中提取角色
 	role, ok := metadata["role"].(string)
 	if !ok || role == "" {
+		g.logger.Printf("[MultiVoiceGateway] ❌ role not specified in metadata: %+v", metadata)
 		return fmt.Errorf("role not specified in metadata")
 	}
 
 	g.logger.Printf("[MultiVoiceGateway] Sending instructions to role %s (len=%d)", role, len(instructions))
+	g.logger.Printf("[MultiVoiceGateway] Metadata: %+v", metadata)
 
 	// 保存活跃元数据
 	g.activeMetadataLock.Lock()
@@ -475,7 +487,11 @@ func (g *MultiVoiceGateway) SendInstructions(ctx context.Context, instructions s
 	g.activeMetadataLock.Unlock()
 
 	// 在指定角色的连接上创建响应
-	return g.voicePool.CreateResponse(role, instructions, metadata)
+	err := g.voicePool.CreateResponse(ctx, role, instructions, metadata)
+	if err != nil {
+		g.logger.Printf("[MultiVoiceGateway] ❌ Failed to create response for role %s: %v", role, err)
+	}
+	return err
 }
 
 // sendToClient 发送消息给客户端

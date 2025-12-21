@@ -111,7 +111,7 @@ func (o *Orchestrator) GetInitialInstructions(_ context.Context, state *model.Se
 }
 
 // HandleUserUtterance 处理用户语音转写输入
-func (o *Orchestrator) HandleUserUtterance(ctx context.Context, sessionID string, text string, gw *gateway.Gateway) error {
+func (o *Orchestrator) HandleUserUtterance(ctx context.Context, sessionID string, text string, gw interface{}) error {
 	o.logger.Printf("[Orchestrator] handling user utterance for session %s: %s", sessionID, text)
 
 	// 1. 获取当前会话状态
@@ -150,10 +150,27 @@ func (o *Orchestrator) HandleUserUtterance(ctx context.Context, sessionID string
 	o.logger.Printf("[Orchestrator] Actor prompt generated, length=%d", len(prompt.Instructions))
 
 	// 6. 通过Gateway发送指令到Realtime
+	// 关键：在 metadata 中传递 role，MultiVoiceGateway 需要这个字段
 	if gw != nil {
-		if err := gw.SendInstructions(ctx, prompt.Instructions, prompt.DebugInfo); err != nil {
-			return fmt.Errorf("send instructions: %w", err)
+		metadata := map[string]interface{}{
+			"role":   plan.NextRole, // 关键！指定哪个角色说话
+			"beat":   plan.NextBeat,
+			"action": plan.OutputAction,
 		}
+
+		// 类型断言，支持两种 Gateway
+		if mvg, ok := gw.(*gateway.MultiVoiceGateway); ok {
+			if err := mvg.SendInstructions(ctx, prompt.Instructions, metadata); err != nil {
+				return fmt.Errorf("send instructions to MultiVoiceGateway: %w", err)
+			}
+		} else if g, ok := gw.(*gateway.Gateway); ok {
+			if err := g.SendInstructions(ctx, prompt.Instructions, metadata); err != nil {
+				return fmt.Errorf("send instructions to Gateway: %w", err)
+			}
+		} else {
+			o.logger.Printf("[Orchestrator] ⚠️  Unknown gateway type, skipping SendInstructions")
+		}
+
 		o.logger.Printf("[Orchestrator] Instructions sent to Realtime successfully")
 	}
 
@@ -216,7 +233,7 @@ func (o *Orchestrator) HandleBargeIn(ctx context.Context, sessionID string) erro
 }
 
 // HandleWorldEntered 处理进入 World 的事件，导演主动开场。
-func (o *Orchestrator) HandleWorldEntered(ctx context.Context, sessionID string, gw *gateway.Gateway) error {
+func (o *Orchestrator) HandleWorldEntered(ctx context.Context, sessionID string, gw interface{}) error {
 	o.logger.Printf("[Orchestrator] world entered: session=%s", sessionID)
 
 	state, err := o.store.Get(ctx, sessionID)
@@ -243,11 +260,28 @@ func (o *Orchestrator) HandleWorldEntered(ctx context.Context, sessionID string,
 
 	prompt := o.buildActorPrompt(state, plan, eventID, "")
 
+	// 通过 Gateway 发送指令
 	if gw != nil {
-		if err := gw.SendInstructions(ctx, prompt.Instructions, prompt.DebugInfo); err != nil {
-			return fmt.Errorf("send instructions: %w", err)
+		metadata := map[string]interface{}{
+			"role":   plan.NextRole, // 关键！指定哪个角色说话
+			"beat":   plan.NextBeat,
+			"action": plan.OutputAction,
 		}
-		o.logger.Printf("[Orchestrator] Intro instructions sent successfully")
+
+		// 类型断言，支持两种 Gateway
+		if mvg, ok := gw.(*gateway.MultiVoiceGateway); ok {
+			if err := mvg.SendInstructions(ctx, prompt.Instructions, metadata); err != nil {
+				return fmt.Errorf("send instructions to MultiVoiceGateway: %w", err)
+			}
+		} else if g, ok := gw.(*gateway.Gateway); ok {
+			if err := g.SendInstructions(ctx, prompt.Instructions, metadata); err != nil {
+				return fmt.Errorf("send instructions to Gateway: %w", err)
+			}
+		} else {
+			o.logger.Printf("[Orchestrator] ⚠️  Unknown gateway type, skipping SendInstructions")
+		}
+
+		o.logger.Printf("[Orchestrator] Opening instructions sent successfully")
 	}
 
 	state.UpdatedAt = o.now()

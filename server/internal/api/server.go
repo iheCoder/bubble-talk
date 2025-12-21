@@ -30,8 +30,8 @@ type Server struct {
 	now          func() time.Time
 	orchestrator *orchestrator.Orchestrator
 
-	// gateways 管理所有活跃的语音网关 (sessionID -> Gateway)
-	gateways   map[string]*gateway.Gateway
+	// gateways 管理所有活跃的语音网关 (sessionID -> Gateway/MultiVoiceGateway)
+	gateways   map[string]interface{}
 	gatewaysMu sync.RWMutex
 
 	// realtimeClient 只用于签发 OpenAI Realtime 的 ephemeral key，
@@ -55,7 +55,7 @@ func NewServer(cfg *config.Config, store session.Store, timeline timeline.Store)
 		bubbles:      bubbles,
 		now:          time.Now,
 		orchestrator: orchestrator.New(store, timeline, time.Now),
-		gateways:     make(map[string]*gateway.Gateway),
+		gateways:     make(map[string]interface{}),
 		realtimeClient: &realtime.Client{
 			APIKey: cfg.OpenAI.APIKey,
 		},
@@ -226,9 +226,9 @@ func (s *Server) handleSessionStream(c *gin.Context) {
 	}
 	log.Printf("[API] Gateway config: model=%s voice=%s", gwConfig.Model, gwConfig.Voice)
 
-	// 创建 Gateway 实例
-	log.Printf("[API] Creating Gateway instance...")
-	gw := gateway.NewGateway(sessionID, clientConn, gwConfig)
+	// 创建 MultiVoiceGateway 实例（支持多音色）
+	log.Printf("[API] Creating MultiVoiceGateway instance with %d roles...", len(roleProfiles))
+	gw := gateway.NewMultiVoiceGateway(sessionID, clientConn, gwConfig)
 
 	// 设置事件处理器：将 Gateway 事件转发给 Orchestrator
 	gw.SetEventHandler(func(ctx context.Context, msg *gateway.ClientMessage) error {
@@ -283,7 +283,7 @@ func (s *Server) handleSessionStream(c *gin.Context) {
 }
 
 // handleGatewayEvent 处理来自 Gateway 的事件
-func (s *Server) handleGatewayEvent(ctx context.Context, sessionID string, gw *gateway.Gateway, msg *gateway.ClientMessage) error {
+func (s *Server) handleGatewayEvent(ctx context.Context, sessionID string, gw interface{}, msg *gateway.ClientMessage) error {
 	log.Printf("[API] gateway event: session=%s type=%s", sessionID, msg.Type)
 
 	switch msg.Type {

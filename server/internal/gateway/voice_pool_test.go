@@ -348,12 +348,12 @@ func TestVoicePoolGetRoleConnError(t *testing.T) {
 		roleConns: make(map[string]*RoleConn),
 	}
 
-	_, err := pool.GetRoleConn("nonexistent")
+	_, err := pool.GetRoleConn(context.Background(), "nonexistent")
 	if err == nil {
 		t.Error("Expected error when getting nonexistent role conn, got nil")
 	}
 
-	expectedMsg := "role conn not found: nonexistent"
+	expectedMsg := "role 'nonexistent' not configured in RoleVoices"
 	if err.Error() != expectedMsg {
 		t.Errorf("Expected error message '%s', got '%s'", expectedMsg, err.Error())
 	}
@@ -422,7 +422,7 @@ func Example_voicePoolUsage() {
 		"role": "host",
 		"beat": "greeting",
 	}
-	_ = pool.CreateResponse("host", "Respond warmly", metadata)
+	_ = pool.CreateResponse(ctx, "host", "Respond warmly", metadata)
 
 	// 6. 同步助手文本（响应完成后）
 	_ = pool.SyncAssistantText("I'm doing great, thanks!", "host")

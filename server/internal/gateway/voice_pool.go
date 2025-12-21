@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 )
 
 // VoicePool 管理多个角色连接（每个角色一个固定音色的 Realtime 连接）
@@ -35,6 +36,16 @@ type VoicePool struct {
 	config VoicePoolConfig
 
 	logger *log.Logger
+}
+
+const roleConnCreateTimeout = 20 * time.Second
+
+func (vp *VoicePool) logf(format string, args ...any) {
+	if vp.logger != nil {
+		vp.logger.Printf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // ConversationTurn 对话轮次
@@ -68,21 +79,21 @@ func NewVoicePool(sessionID string, config VoicePoolConfig) *VoicePool {
 
 // Initialize 初始化音色池（只创建 ASR 连接）
 func (vp *VoicePool) Initialize(ctx context.Context) error {
-	vp.logger.Printf("[VoicePool:%s] Initializing voice pool (on-demand mode)", vp.sessionID)
+	vp.logf("[VoicePool:%s] Initializing voice pool (on-demand mode)", vp.sessionID)
 
 	// 只创建 ASR 专用连接，角色连接按需创建
 	if err := vp.createASRConn(ctx); err != nil {
-		vp.logger.Printf("[VoicePool:%s] ❌ Failed to create ASR conn: %v", vp.sessionID, err)
+		vp.logf("[VoicePool:%s] ❌ Failed to create ASR conn: %v", vp.sessionID, err)
 		return fmt.Errorf("create ASR conn: %w", err)
 	}
-	vp.logger.Printf("[VoicePool:%s] ✅ ASR conn created", vp.sessionID)
+	vp.logf("[VoicePool:%s] ✅ ASR conn created", vp.sessionID)
 
-	vp.logger.Printf("[VoicePool:%s] ✅ Voice pool initialized (roles will be created on-demand)", vp.sessionID)
+	vp.logf("[VoicePool:%s] ✅ Voice pool initialized (roles will be created on-demand)", vp.sessionID)
 	return nil
 }
 
-// createRoleConn 创建并初始化一个角色连接
-func (vp *VoicePool) createRoleConn(ctx context.Context, role string, voice string) error {
+// newRoleConn 创建并初始化一个角色连接（不写入 roleConns；由调用方决定何时注册）
+func (vp *VoicePool) newRoleConn(ctx context.Context, role string, voice string) (*RoleConn, error) {
 	config := RoleConnConfig{
 		OpenAIAPIKey:                 vp.config.OpenAIAPIKey,
 		Model:                        vp.config.Model,
@@ -97,19 +108,15 @@ func (vp *VoicePool) createRoleConn(ctx context.Context, role string, voice stri
 	roleConn := NewRoleConn(role, voice, config)
 
 	if err := roleConn.Connect(ctx); err != nil {
-		return fmt.Errorf("connect: %w", err)
+		return nil, fmt.Errorf("connect: %w", err)
 	}
 
 	if err := roleConn.Initialize(ctx); err != nil {
 		_ = roleConn.Close()
-		return fmt.Errorf("initialize: %w", err)
+		return nil, fmt.Errorf("initialize: %w", err)
 	}
 
-	vp.roleConnsMu.Lock()
-	vp.roleConns[role] = roleConn
-	vp.roleConnsMu.Unlock()
-
-	return nil
+	return roleConn, nil
 }
 
 // createASRConn 创建 ASR 专用连接
@@ -144,7 +151,7 @@ func (vp *VoicePool) createASRConn(ctx context.Context) error {
 }
 
 // GetRoleConn 获取指定角色的连接（按需创建）
-func (vp *VoicePool) GetRoleConn(role string) (*RoleConn, error) {
+func (vp *VoicePool) GetRoleConn(ctx context.Context, role string) (*RoleConn, error) {
 	// 先尝试获取已存在的连接
 	vp.roleConnsMu.RLock()
 	conn, exists := vp.roleConns[role]
@@ -155,7 +162,7 @@ func (vp *VoicePool) GetRoleConn(role string) (*RoleConn, error) {
 	}
 
 	// 连接不存在，按需创建
-	vp.logger.Printf("[VoicePool:%s] Role conn for '%s' not found, creating on-demand...", vp.sessionID, role)
+	vp.logf("[VoicePool:%s] Role conn for '%s' not found, creating on-demand...", vp.sessionID, role)
 
 	// 获取该角色的音色配置
 	voice, ok := vp.config.RoleVoices[role]
@@ -163,25 +170,34 @@ func (vp *VoicePool) GetRoleConn(role string) (*RoleConn, error) {
 		return nil, fmt.Errorf("role '%s' not configured in RoleVoices", role)
 	}
 
-	// 创建角色连接（需要写锁）
-	vp.roleConnsMu.Lock()
-	defer vp.roleConnsMu.Unlock()
-
-	// 双重检查：可能在等待锁期间已被其他 goroutine 创建
-	if conn, exists := vp.roleConns[role]; exists {
-		vp.logger.Printf("[VoicePool:%s] Role conn for '%s' was created by another goroutine", vp.sessionID, role)
-		return conn, nil
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, roleConnCreateTimeout)
+		defer cancel()
 	}
 
-	// 创建新连接
-	ctx := context.Background()
-	if err := vp.createRoleConn(ctx, role, voice); err != nil {
+	// 连接建立/初始化涉及网络 I/O，不应持有 roleConnsMu，避免阻塞其它读写路径。
+	roleConn, err := vp.newRoleConn(ctx, role, voice)
+	if err != nil {
 		return nil, fmt.Errorf("create role conn on-demand: %w", err)
 	}
 
-	vp.logger.Printf("[VoicePool:%s] ✅ Role conn for '%s' (voice=%s) created on-demand", vp.sessionID, role, voice)
+	// 双重检查：可能在我们创建期间已被其他 goroutine 创建并注册。
+	vp.roleConnsMu.Lock()
+	defer vp.roleConnsMu.Unlock()
+	if existing, exists := vp.roleConns[role]; exists {
+		vp.logf("[VoicePool:%s] Role conn for '%s' was created by another goroutine", vp.sessionID, role)
+		_ = roleConn.Close()
+		return existing, nil
+	}
 
-	return vp.roleConns[role], nil
+	vp.roleConns[role] = roleConn
+	vp.logf("[VoicePool:%s] ✅ Role conn for '%s' (voice=%s) created on-demand", vp.sessionID, role, voice)
+
+	return roleConn, nil
 }
 
 // GetASRConn 获取 ASR 连接
@@ -197,7 +213,7 @@ func (vp *VoicePool) GetASRConn() (*RoleConn, error) {
 
 // SyncUserText 同步用户文本到所有角色连接
 func (vp *VoicePool) SyncUserText(text string) error {
-	vp.logger.Printf("[VoicePool:%s] Syncing user text to all role conns: %s", vp.sessionID, text)
+	vp.logf("[VoicePool:%s] Syncing user text to all role conns: %s", vp.sessionID, text)
 
 	vp.conversationHistoryMu.Lock()
 	vp.conversationHistory = append(vp.conversationHistory, ConversationTurn{
@@ -206,22 +222,66 @@ func (vp *VoicePool) SyncUserText(text string) error {
 	})
 	vp.conversationHistoryMu.Unlock()
 
-	vp.roleConnsMu.RLock()
-	defer vp.roleConnsMu.RUnlock()
-
+	// 遍历配置的所有角色
 	var lastErr error
-	for role, conn := range vp.roleConns {
-		if err := conn.SyncUserText(text); err != nil {
-			vp.logger.Printf("[VoicePool:%s] ⚠️  Failed to sync user text to %s: %v", vp.sessionID, role, err)
-			lastErr = err
+	for role := range vp.config.RoleVoices {
+		// 先尝试获取已存在的连接（不创建新的）
+		vp.roleConnsMu.RLock()
+		conn, exists := vp.roleConns[role]
+		vp.roleConnsMu.RUnlock()
+
+		if exists {
+			// 连接已存在，直接同步
+			if err := conn.SyncUserText(text); err != nil {
+				vp.logf("[VoicePool:%s] ⚠️  Failed to sync user text to %s: %v", vp.sessionID, role, err)
+				lastErr = err
+			}
+			vp.logf("[VoicePool:%s] ✅ Synced user text to %s", vp.sessionID, role)
+		} else {
+			// 连接不存在，异步创建并同步
+			vp.logf("[VoicePool:%s] Role %s not found, will create and sync asynchronously", vp.sessionID, role)
+			go vp.createAndSyncUserText(role, text)
 		}
 	}
 	return lastErr
 }
 
+// createAndSyncUserText 异步创建角色连接并同步用户文本
+func (vp *VoicePool) createAndSyncUserText(role string, text string) {
+	vp.logf("[VoicePool:%s] Creating role conn for %s asynchronously...", vp.sessionID, role)
+
+	conn, err := vp.GetRoleConn(context.Background(), role)
+	if err != nil {
+		vp.logf("[VoicePool:%s] ❌ Failed to create role conn for %s: %v", vp.sessionID, role, err)
+		return
+	}
+
+	// 同步历史记录中的所有用户消息
+	vp.conversationHistoryMu.RLock()
+	history := make([]ConversationTurn, len(vp.conversationHistory))
+	copy(history, vp.conversationHistory)
+	vp.conversationHistoryMu.RUnlock()
+
+	vp.logf("[VoicePool:%s] Syncing %d historical messages to %s", vp.sessionID, len(history), role)
+
+	for _, turn := range history {
+		if turn.Role == "user" {
+			if err := conn.SyncUserText(turn.Text); err != nil {
+				vp.logf("[VoicePool:%s] ⚠️  Failed to sync historical user text to %s: %v", vp.sessionID, role, err)
+			}
+		} else if turn.Role == "assistant" {
+			if err := conn.SyncAssistantText(turn.Text, turn.FromRole); err != nil {
+				vp.logf("[VoicePool:%s] ⚠️  Failed to sync historical assistant text to %s: %v", vp.sessionID, role, err)
+			}
+		}
+	}
+
+	vp.logf("[VoicePool:%s] ✅ Role %s created and synced with history", vp.sessionID, role)
+}
+
 // SyncAssistantText 同步助手文本到所有角色连接
 func (vp *VoicePool) SyncAssistantText(text string, fromRole string) error {
-	vp.logger.Printf("[VoicePool:%s] Syncing assistant text from %s to all role conns: %s", vp.sessionID, fromRole, text)
+	vp.logf("[VoicePool:%s] Syncing assistant text from %s to all role conns: %s", vp.sessionID, fromRole, text)
 
 	vp.conversationHistoryMu.Lock()
 	vp.conversationHistory = append(vp.conversationHistory, ConversationTurn{
@@ -231,24 +291,27 @@ func (vp *VoicePool) SyncAssistantText(text string, fromRole string) error {
 	})
 	vp.conversationHistoryMu.Unlock()
 
+	// 只同步到已存在的连接，避免阻塞
 	vp.roleConnsMu.RLock()
 	defer vp.roleConnsMu.RUnlock()
 
 	var lastErr error
 	for role, conn := range vp.roleConns {
 		if err := conn.SyncAssistantText(text, fromRole); err != nil {
-			vp.logger.Printf("[VoicePool:%s] ⚠️  Failed to sync assistant text to %s: %v", vp.sessionID, role, err)
+			vp.logf("[VoicePool:%s] ⚠️  Failed to sync assistant text to %s: %v", vp.sessionID, role, err)
 			lastErr = err
+		} else {
+			vp.logf("[VoicePool:%s] ✅ Synced assistant text to %s", vp.sessionID, role)
 		}
 	}
 	return lastErr
 }
 
 // CreateResponse 在指定角色连接上创建响应
-func (vp *VoicePool) CreateResponse(role string, instructions string, metadata map[string]interface{}) error {
-	vp.logger.Printf("[VoicePool:%s] Creating response for role %s", vp.sessionID, role)
+func (vp *VoicePool) CreateResponse(ctx context.Context, role string, instructions string, metadata map[string]interface{}) error {
+	vp.logf("[VoicePool:%s] Creating response for role %s", vp.sessionID, role)
 
-	conn, err := vp.GetRoleConn(role)
+	conn, err := vp.GetRoleConn(ctx, role)
 	if err != nil {
 		return fmt.Errorf("get role conn: %w", err)
 	}
@@ -267,13 +330,13 @@ func (vp *VoicePool) CancelCurrentResponse() error {
 	vp.speakingRoleMu.RUnlock()
 
 	if role == "" {
-		vp.logger.Printf("[VoicePool:%s] No active speaker to cancel", vp.sessionID)
+		vp.logf("[VoicePool:%s] No active speaker to cancel", vp.sessionID)
 		return nil
 	}
 
-	vp.logger.Printf("[VoicePool:%s] Canceling response for role %s", vp.sessionID, role)
+	vp.logf("[VoicePool:%s] Canceling response for role %s", vp.sessionID, role)
 
-	conn, err := vp.GetRoleConn(role)
+	conn, err := vp.GetRoleConn(context.Background(), role)
 	if err != nil {
 		return fmt.Errorf("get role conn: %w", err)
 	}
@@ -300,11 +363,11 @@ func (vp *VoicePool) GetConversationHistory() []ConversationTurn {
 
 // Close 关闭所有连接
 func (vp *VoicePool) Close() error {
-	vp.logger.Printf("[VoicePool:%s] Closing voice pool", vp.sessionID)
+	vp.logf("[VoicePool:%s] Closing voice pool", vp.sessionID)
 
 	vp.roleConnsMu.Lock()
 	for role, conn := range vp.roleConns {
-		vp.logger.Printf("[VoicePool:%s] Closing role conn: %s", vp.sessionID, role)
+		vp.logf("[VoicePool:%s] Closing role conn: %s", vp.sessionID, role)
 		_ = conn.Close()
 	}
 	vp.roleConns = make(map[string]*RoleConn)
@@ -312,12 +375,12 @@ func (vp *VoicePool) Close() error {
 
 	vp.asrConnMu.Lock()
 	if vp.asrConn != nil {
-		vp.logger.Printf("[VoicePool:%s] Closing ASR conn", vp.sessionID)
+		vp.logf("[VoicePool:%s] Closing ASR conn", vp.sessionID)
 		_ = vp.asrConn.Close()
 		vp.asrConn = nil
 	}
 	vp.asrConnMu.Unlock()
 
-	vp.logger.Printf("[VoicePool:%s] ✅ Voice pool closed", vp.sessionID)
+	vp.logf("[VoicePool:%s] ✅ Voice pool closed", vp.sessionID)
 	return nil
 }

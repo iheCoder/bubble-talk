@@ -289,7 +289,7 @@ const schedule = (fn, delay) => {
 
 const handleSend = () => {
   if (!input.value.trim()) return
-  pushMessage('user', input.value.trim())
+  // Send to gateway but don't display user speech
   input.value = ''
 }
 

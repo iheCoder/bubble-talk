@@ -351,7 +351,10 @@ func Example_multiVoiceGatewayUsage() {
 	})
 
 	// 4. 启动网关
-	_ = gw.Start(ctx)
+	// 注意：示例中 clientConn 为 nil，Start 会返回错误；这里仅演示 API 形态。
+	if err := gw.Start(ctx); err != nil {
+		return
+	}
 
 	// 5. 发送指令到指定角色
 	metadata := map[string]interface{}{
