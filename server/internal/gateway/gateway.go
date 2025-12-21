@@ -805,6 +805,43 @@ func (g *Gateway) handleAudioDone(data []byte) error {
 
 // handleResponseDone 处理响应完成事件
 func (g *Gateway) handleResponseDone(data []byte) error {
+	// 解析完整的 response.done 事件
+	var event struct {
+		Type       string `json:"type"`
+		EventID    string `json:"event_id"`
+		ResponseID string `json:"response_id"`
+		Response   struct {
+			ID            string        `json:"id"`
+			Object        string        `json:"object"`
+			Status        string        `json:"status"` // "completed", "cancelled", "failed", "incomplete"
+			StatusDetails interface{}   `json:"status_details"`
+			Output        []interface{} `json:"output"`
+			Usage         interface{}   `json:"usage"`
+		} `json:"response"`
+	}
+
+	if err := json.Unmarshal(data, &event); err != nil {
+		g.logger.Printf("[Gateway] ⚠️  Failed to parse response.done: %v", err)
+		// 继续执行清理逻辑
+	} else {
+		// 记录详细信息
+		outputCount := len(event.Response.Output)
+		g.logger.Printf("[Gateway] response.done: id=%s status=%s output_count=%d",
+			event.ResponseID, event.Response.Status, outputCount)
+
+		// 检测异常状态
+		if event.Response.Status != "completed" {
+			g.logger.Printf("[Gateway] ⚠️  Abnormal response status: %s, details: %+v",
+				event.Response.Status, event.Response.StatusDetails)
+		}
+
+		// 检测空响应（没有生成任何输出）
+		if outputCount == 0 {
+			g.logger.Printf("[Gateway] ⚠️  Empty response detected (no output items generated)")
+			g.logger.Printf("[Gateway] Response details: %s", string(data))
+		}
+	}
+
 	// 清除活跃响应ID
 	g.activeResponseIDLock.Lock()
 	g.activeResponseID = ""

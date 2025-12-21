@@ -110,7 +110,7 @@ type RealtimeResponseCreateConfig struct {
 	Voice        string   `json:"voice,omitempty"`
 	Temperature  float64  `json:"temperature,omitempty"`
 	MaxTokens    int      `json:"max_tokens,omitempty"`
-	// Metadata 用于在 response.created 回传时区分“我们手动创建” vs “Realtime 自动创建(若存在)”
+	// Metadata 用于在 response.created 回传时区分"我们手动创建" vs "Realtime 自动创建(若存在)"
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -138,8 +138,9 @@ type RealtimeInputAudioBufferClear struct {
 
 // RealtimeConversationItemCreate 创建对话项（手动注入消息）
 type RealtimeConversationItemCreate struct {
-	Type string                   `json:"type"` // "conversation.item.create"
-	Item RealtimeConversationItem `json:"item"`
+	Type    string                   `json:"type"` // "conversation.item.create"
+	EventID string                   `json:"event_id,omitempty"`
+	Item    RealtimeConversationItem `json:"item"`
 }
 
 // RealtimeConversationItem 对话项
