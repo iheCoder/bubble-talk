@@ -56,12 +56,6 @@ const selectedOption = ref(null)
 const input = ref('')
 const timers = []
 
-// New state for Round Table mode
-const currentSpeech = ref({
-  host: null,
-  expert: null,
-  user: null
-})
 const isMicActive = ref(false) // 初始为 false，连接后才启用
 // 产品预期：默认进入即“聆听中”，否则用户会误以为系统无响应。
 const isMuted = ref(false)
@@ -78,8 +72,7 @@ const isConnecting = ref(false)
 const isConnected = ref(false)
 const connectionError = ref('')
 
-// 转写和调试
-const transcript = ref([])
+// 转写（仅用于控制流；不做 UI 回显）
 const partialTranscript = ref('')
 
 // 诊断题目
@@ -182,8 +175,6 @@ const connect = async () => {
     // ASR 最终转写 - 用户说完了
     gateway.value.onASRFinal = (text) => {
       partialTranscript.value = ''
-      pushMessage('user', text)
-      transcript.value.push({ type: 'user', text, time: new Date() })
       console.log('[WorldView] ✅ 用户说:', text)
     }
 
@@ -236,19 +227,9 @@ const connect = async () => {
 
       console.log('[WorldView] 💬 AI 说话:', role, text)
 
-      // 显示对话气泡
       activeRole.value = role
       isThinking.value = false
-      pushMessage(role, text)
-
-      // 记录到转写历史
-      transcript.value.push({
-        type: 'assistant',
-        role,
-        text,
-        beat,
-        time: new Date()
-      })
+      void beat
     }
 
     // 错误处理
@@ -281,31 +262,6 @@ const disconnect = () => {
     gateway.value = null
   }
   isConnected.value = false
-}
-
-const pushMessage = (role, text) => {
-  // Map specific expert ID to generic 'expert' key for UI positioning if needed
-  // But better to use the role ID directly if we make the template dynamic
-
-  // Clear previous speech for this role
-  currentSpeech.value[role] = null
-
-  // Set new speech with a small delay to trigger animation if needed
-  setTimeout(() => {
-    currentSpeech.value[role] = {
-      text,
-      timestamp: Date.now()
-    }
-  }, 10)
-
-  // Auto-clear after some time (simulating speech duration)
-  // In a real app, this would be tied to audio playback end
-  const duration = Math.max(2000, text.length * 100)
-  schedule(() => {
-    if (currentSpeech.value[role]?.text === text) {
-      currentSpeech.value[role] = null
-    }
-  }, duration + 1000)
 }
 
 const schedule = (fn, delay) => {
@@ -356,7 +312,6 @@ onMounted(() => {
 // Watch for bubble changes to restart sequence if needed (though usually component is remounted)
 watch(() => props.bubble, () => {
   timers.forEach((id) => window.clearTimeout(id))
-  currentSpeech.value = { host: null, expert: null, user: null }
   hasSentIntro.value = false
   if (isConnected.value) {
     requestDirectorIntro()
@@ -390,7 +345,6 @@ onBeforeUnmount(() => {
       :expert-role="expertRole"
       :active-role="activeRole"
       :is-assistant-speaking="isAssistantSpeaking"
-      :current-speech="currentSpeech"
       :is-thinking="isThinking"
       :diagnose="diagnose"
       :tool-visible="toolVisible"
