@@ -5,22 +5,38 @@ import (
 	"bubble-talk/server/internal/llm"
 	"bubble-talk/server/internal/model"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 )
 
-// MockLLMClient 模拟 LLM 客户端
-type MockLLMClient struct {
-	response string
-	err      error
+// SegmentTestLLMClient 用于 segment_director_test 的 LLM mock。
+// 这里不复用同包内的 MockLLMClient（用于其他导演路径），避免命名冲突与行为不一致。
+type SegmentTestLLMClient struct {
+	Responses map[string]string
+	Err       error
 }
 
-func (m *MockLLMClient) Complete(ctx context.Context, messages []llm.Message, schema *llm.JSONSchema) (string, error) {
-	if m.err != nil {
-		return "", m.err
+func (m *SegmentTestLLMClient) Complete(ctx context.Context, messages []llm.Message, schema *llm.JSONSchema) (string, error) {
+	if m.Err != nil {
+		return "", m.Err
 	}
-	return m.response, nil
+	if m.Responses == nil {
+		return "", errors.New("SegmentTestLLMClient: Responses is nil")
+	}
+
+	// summarizeStoryProgress 会传 nil schema；这里用空 key 匹配。
+	schemaName := ""
+	if schema != nil {
+		schemaName = schema.Name
+	}
+
+	if resp, ok := m.Responses[schemaName]; ok {
+		return resp, nil
+	}
+
+	return "", errors.New("SegmentTestLLMClient: missing response for schema " + schemaName)
 }
 
 // TestSegmentDirector_DecideSegment_NoUserInput 测试无用户输入时的剧情推进
@@ -33,8 +49,10 @@ func TestSegmentDirector_DecideSegment_NoUserInput(t *testing.T) {
 	}
 
 	// Mock LLM 返回
-	mockLLM := &MockLLMClient{
-		response: `{
+	mockLLM := &SegmentTestLLMClient{
+		Responses: map[string]string{
+			"": `【剧情进展】：对话刚开始，主持人准备抛出一个反直觉的例子来引入机会成本。\n【用户参与】：用户尚未回应。\n【当前状态】：开场铺垫中。\n【待解决】：需要用户给出直觉判断以制造冲突。`,
+			"segment_plan": `{
 			"role_id": "host",
 			"scene_direction": "主持人用轻松的口吻抛出问题：你周末加班赚了800块，朋友喊你去看演唱会你没去。你觉得你是赚了还是亏了？制造认知冲突，让用户思考。说完后停下来，观察用户反应。",
 			"narrative_mode": "INTERVIEW",
@@ -45,6 +63,7 @@ func TestSegmentDirector_DecideSegment_NoUserInput(t *testing.T) {
 			"max_duration_sec": 45,
 			"director_notes": "开场制造冲突，引发好奇"
 		}`,
+		},
 	}
 
 	director := NewSegmentDirector(cfg, mockLLM)
@@ -99,8 +118,10 @@ func TestSegmentDirector_DecideSegment_WithUserInput(t *testing.T) {
 		},
 	}
 
-	mockLLM := &MockLLMClient{
-		response: `{
+	mockLLM := &SegmentTestLLMClient{
+		Responses: map[string]string{
+			"": `【剧情进展】：主持人抛出“周末加班赚800”的例子，用户给出直觉判断认为“赚了”。\n【用户参与】：用户表现出直觉性理解，尚未意识到机会成本。\n【当前状态】：冲突已建立，等待进一步引导。\n【待解决】：引导用户评估放弃选项的价值。`,
+			"segment_plan": `{
 			"role_id": "host",
 			"scene_direction": "主持人先肯定用户的观察：你说得对，800块确实是收入。但我想请你再想一个问题：那场演唱会呢？你放弃的那个选择，值多少？不要急着给答案，停下来让用户思考。",
 			"user_intent": "confused",
@@ -115,6 +136,7 @@ func TestSegmentDirector_DecideSegment_WithUserInput(t *testing.T) {
 			"max_duration_sec": 60,
 			"director_notes": "用户有困惑，需要温和引导"
 		}`,
+		},
 	}
 
 	director := NewSegmentDirector(cfg, mockLLM)
@@ -143,23 +165,16 @@ func TestSegmentDirector_DecideSegment_WithUserInput(t *testing.T) {
 		t.Fatalf("DecideSegment failed: %v", err)
 	}
 
-	// 验证回应策略存在
-	if segmentPlan.UserResponseStrategy == nil {
-		t.Error("UserResponseStrategy should not be nil when there's user input")
+	if segmentPlan.SceneDirection == "" {
+		t.Error("SceneDirection should not be empty when there's user input")
 	}
-
-	if segmentPlan.UserResponseStrategy != nil {
-		if segmentPlan.UserResponseStrategy.UserIntent == "" {
-			t.Error("UserIntent should not be empty")
-		}
-		if segmentPlan.UserResponseStrategy.ResponseApproach == "" {
-			t.Error("ResponseApproach should not be empty")
-		}
+	if !strings.Contains(segmentPlan.SceneDirection, "演唱会") {
+		t.Errorf("SceneDirection should mention context continuity, got: %q", segmentPlan.SceneDirection)
 	}
 
 	t.Logf("✅ Response generated successfully:")
-	t.Logf("   Intent: %s", segmentPlan.UserResponseStrategy.UserIntent)
-	t.Logf("   Approach: %s", segmentPlan.UserResponseStrategy.ResponseApproach[:50]+"...")
+	t.Logf("   Role: %s", segmentPlan.RoleID)
+	t.Logf("   Scene: %s", segmentPlan.SceneDirection[:50]+"...")
 }
 
 // TestSegmentDirector_Continuity 测试剧情连贯性
@@ -181,11 +196,13 @@ func TestSegmentDirector_StoryProgress(t *testing.T) {
 		Director: config.DirectorConfig{},
 	}
 
-	mockLLM := &MockLLMClient{
-		response: `【剧情进展】：主持人抛出了"周末加班赚800"的例子，用户初步回应认为"赚了"
+	mockLLM := &SegmentTestLLMClient{
+		Responses: map[string]string{
+			"": `【剧情进展】：主持人抛出了"周末加班赚800"的例子，用户初步回应认为"赚了"
 【用户参与】：用户展现出直觉思维，还没意识到机会成本
 【当前状态】：冲突已制造，待引导用户思考"放弃了什么"
 【待解决】：机会成本的核心概念还未澄清`,
+		},
 	}
 
 	director := NewSegmentDirector(cfg, mockLLM)

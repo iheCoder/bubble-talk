@@ -575,58 +575,17 @@ func (d *SegmentDirector) decideSegmentWithLLM(
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
 
-	// 构建 SegmentPlan
+	// 构建简化的 SegmentPlan
+	// 所有复杂的叙事控制都通过 scene_direction 的自然语言描述来体现
 	segmentPlan := &model.SegmentPlan{
 		SegmentID:      fmt.Sprintf("seg_%d", time.Now().Unix()),
 		RoleID:         planData.RoleID,
 		SceneDirection: planData.SceneDirection,
-		NarrativeTilt: model.NarrativeTilt{
-			Mode:          planData.NarrativeMode,
-			Tone:          planData.NarrativeTone,
-			TeachingStyle: "SOCRATIC",
-		},
-		SegmentGoal: model.SegmentGoal{
-			Teaching: planData.TeachingGoal,
-			UserMustDo: &model.UserMustDo{
-				Type:   planData.UserMustDoType,
-				Prompt: planData.UserMustDoPrompt,
-			},
-		},
-		AutonomyBudget: model.AutonomyBudget{
-			MaxSec:   planData.MaxDurationSec,
-			MaxTurns: planData.MaxDurationSec / 10,
-		},
-		InteractionWindows: []model.InteractionWindow{
-			{
-				WindowID:   "w1",
-				Trigger:    "BEFORE_WRAP",
-				MaxWaitSec: 15,
-				UserMustDo: &model.UserMustDo{
-					Type:   planData.UserMustDoType,
-					Prompt: planData.UserMustDoPrompt,
-				},
-			},
-		},
-		Guardrails: model.Guardrails{
-			MaxTotalOutputSec: 120,
-			MustReference:     state.MisconceptionTags,
-			DisallowNewRoles:  true,
-		},
-		DirectorNotes:   planData.DirectorNotes,
-		ScriptReference: planData.ScriptReference,
+		MaxDurationSec: planData.MaxDurationSec,
+		DirectorNotes:  planData.DirectorNotes,
 	}
 
-	// 如果有用户输入，构建回应策略
-	if userInput != "" && planData.ResponseApproach != "" {
-		needHookBack := planData.UserIntent == "off_topic"
-		segmentPlan.UserResponseStrategy = &model.UserResponseStrategy{
-			UserIntent:       planData.UserIntent,
-			UserMindState:    planData.UserMindState,
-			ResponseApproach: planData.ResponseApproach,
-			NeedUserOutput:   planData.NeedUserOutput,
-			NeedHookBack:     needHookBack,
-		}
-	}
+	log.Printf("🎬 Segment Plan: role=%s, duration=%ds", planData.RoleID, planData.MaxDurationSec)
 
 	return segmentPlan, nil
 }
@@ -712,6 +671,14 @@ func getRoleDescription(roleID string) string {
 	return "参与对话、推进剧情"
 }
 
+// getRoleDescriptionFromState 从会话状态动态获取角色描述
+// TODO: 未来应该从 state.BubbleConfig.Roles[roleID] 读取
+func (d *SegmentDirector) getRoleDescriptionFromState(roleID string, state *model.SessionState) string {
+	// TODO: 从泡泡配置中读取角色信息
+	// 临时实现：回退到默认描述
+	return getRoleDescription(roleID)
+}
+
 // buildSegmentUserPromptV2 构建用户提示词（V2：动态拼接，考虑 beat 策略）
 func (d *SegmentDirector) buildSegmentUserPromptV2(
 	script *model.Script,
@@ -779,10 +746,10 @@ func (d *SegmentDirector) buildSegmentUserPromptV2(
 `)
 	}
 
-	// 动态构建角色列表（不写死）
+	// 动态构建角色列表（从泡泡配置）
 	rolesList := "## 可用角色\n\n"
 	for _, roleID := range state.AvailableRoles {
-		roleDesc := getRoleDescription(roleID)
+		roleDesc := d.getRoleDescriptionFromState(roleID, state)
 		rolesList += fmt.Sprintf("- **%s**: %s\n", roleID, roleDesc)
 	}
 
@@ -804,7 +771,7 @@ func (d *SegmentDirector) buildSegmentUserPromptV2(
 
 ---
 
-%s%s%s## 最近对话
+	%s%s## 最近对话
 
 %s
 

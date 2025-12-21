@@ -62,9 +62,6 @@ type SessionState struct {
 	// 当前片段状态（新增）
 	CurrentSegment *SegmentSnapshot `json:"current_segment,omitempty"`
 
-	// 叙事倾向（新增）
-	NarrativeTilt *NarrativeTilt `json:"narrative_tilt,omitempty"`
-
 	// 用户的知识掌握情况。
 	MasteryEstimate float64 `json:"mastery_estimate"`
 	// 用户可能存在的误解标签。
