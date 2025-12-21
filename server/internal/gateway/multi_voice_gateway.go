@@ -113,6 +113,12 @@ func (g *MultiVoiceGateway) Start(ctx context.Context) error {
 
 	g.voicePool = NewVoicePool(g.sessionID, poolConfig)
 
+	// 传递工具注册表到音色池（如果已设置）
+	if g.toolRegistry != nil {
+		g.voicePool.SetToolRegistry(g.toolRegistry)
+		g.logger.Printf("[MultiVoiceGateway] Tool registry passed to voice pool")
+	}
+
 	// 2. 初始化音色池（创建所有 RoleConn 和 ASRConn）
 	g.logger.Printf("[MultiVoiceGateway] Initializing voice pool...")
 	if err := g.voicePool.Initialize(ctx); err != nil {
@@ -304,9 +310,88 @@ func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 	case "input_audio_buffer.speech_stopped":
 		// 用户停止说话
 		g.logger.Printf("[MultiVoiceGateway] User stopped speaking")
+
+	case "response.created":
+		// ASR 连接不应该创建 response，但由于API行为，它会创建
+		// 我们需要从 response 中提取转写，然后取消 response
+		responseID, _ := event["response"].(map[string]interface{})["id"].(string)
+		if responseID != "" {
+			g.logger.Printf("[MultiVoiceGateway] ⚠️ ASR created response %s (will extract transcription and cancel)", responseID)
+			asrConn, _ := g.voicePool.GetASRConn()
+			if asrConn != nil {
+				asrConn.SetActiveResponse(responseID)
+			}
+		}
+
+	case "response.audio_transcript.done", "response.done":
+		// ASR response 完成，提取转写文本
+		return g.handleASRResponseDone(event)
+
+	case "response.audio_transcript.delta":
+		// 忽略 ASR 的音频转写增量（我们只关心最终文本）
+		return nil
 	}
 
 	return nil
+}
+
+// handleASRResponseDone 从 ASR response 中提取转写并取消 response
+func (g *MultiVoiceGateway) handleASRResponseDone(event map[string]interface{}) error {
+	// 从 response 中提取转写
+	var transcript string
+
+	if event["type"] == "response.done" {
+		response, _ := event["response"].(map[string]interface{})
+		output, _ := response["output"].([]interface{})
+
+		for _, item := range output {
+			itemMap, _ := item.(map[string]interface{})
+			itemType, _ := itemMap["type"].(string)
+			if itemType == "message" {
+				content, _ := itemMap["content"].([]interface{})
+				for _, c := range content {
+					cMap, _ := c.(map[string]interface{})
+					if cMap["type"] == "audio" {
+						text, _ := cMap["transcript"].(string)
+						transcript += text
+					}
+				}
+			}
+		}
+	} else {
+		// response.audio_transcript.done
+		transcript, _ = event["transcript"].(string)
+	}
+
+	if transcript == "" {
+		g.logger.Printf("[MultiVoiceGateway] ⚠️ Empty ASR transcript")
+		return nil
+	}
+
+	g.logger.Printf("[MultiVoiceGateway] 📝 ASR transcription: %s", transcript)
+
+	// 取消 ASR response（我们不需要它的音频输出）
+	asrConn, _ := g.voicePool.GetASRConn()
+	if asrConn != nil {
+		if err := asrConn.CancelResponse(); err != nil {
+			g.logger.Printf("[MultiVoiceGateway] ⚠️ Failed to cancel ASR response: %v", err)
+		}
+	}
+
+	// 1. 同步用户文本到所有角色连接（文本镜像）
+	if err := g.voicePool.SyncUserText(transcript); err != nil {
+		g.logger.Printf("[MultiVoiceGateway] ⚠️  Failed to sync user text: %v", err)
+	}
+
+	// 2. 转发给 Orchestrator 处理
+	msg := &ClientMessage{
+		Type:     EventTypeASRFinal,
+		EventID:  fmt.Sprintf("asr_%d", time.Now().UnixNano()),
+		Text:     transcript,
+		ClientTS: time.Now(),
+	}
+
+	return g.forwardToOrchestrator(msg)
 }
 
 // handleASRTranscriptionCompleted 处理转写完成事件

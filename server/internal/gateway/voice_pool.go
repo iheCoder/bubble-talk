@@ -22,6 +22,10 @@ type VoicePool struct {
 	roleConns   map[string]*RoleConn
 	roleConnsMu sync.RWMutex
 
+	// 角色连接创建锁（防止重复创建）
+	roleConnCreating   map[string]chan struct{}
+	roleConnCreatingMu sync.Mutex
+
 	// ASR 专用连接（只做语音识别，不输出音频）
 	asrConn   *RoleConn
 	asrConnMu sync.RWMutex
@@ -43,7 +47,7 @@ type VoicePool struct {
 	logger *log.Logger
 }
 
-const roleConnCreateTimeout = 20 * time.Second
+const roleConnCreateTimeout = 45 * time.Second // 增加到 45 秒，允许 3 次重试
 
 func (vp *VoicePool) logf(format string, args ...any) {
 	if vp.logger != nil {
@@ -76,6 +80,7 @@ func NewVoicePool(sessionID string, config VoicePoolConfig) *VoicePool {
 	return &VoicePool{
 		sessionID:           sessionID,
 		roleConns:           make(map[string]*RoleConn),
+		roleConnCreating:    make(map[string]chan struct{}),
 		conversationHistory: make([]ConversationTurn, 0),
 		config:              config,
 		logger:              log.Default(),
@@ -112,6 +117,12 @@ func (vp *VoicePool) newRoleConn(ctx context.Context, role string, voice string)
 
 	roleConn := NewRoleConn(role, voice, config)
 
+	// 设置工具注册表（如果有）
+	if vp.toolRegistry != nil {
+		roleConn.SetToolRegistry(vp.toolRegistry)
+		vp.logf("[VoicePool:%s] Tool registry set for new role conn: %s", vp.sessionID, role)
+	}
+
 	if err := roleConn.Connect(ctx); err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
@@ -138,6 +149,12 @@ func (vp *VoicePool) createASRConn(ctx context.Context) error {
 	}
 
 	asrConn := NewRoleConn("asr", "alloy", config)
+
+	// 设置工具注册表（如果有）
+	if vp.toolRegistry != nil {
+		asrConn.SetToolRegistry(vp.toolRegistry)
+		vp.logf("[VoicePool:%s] Tool registry set for ASR conn", vp.sessionID)
+	}
 
 	if err := asrConn.Connect(ctx); err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -166,6 +183,42 @@ func (vp *VoicePool) GetRoleConn(ctx context.Context, role string) (*RoleConn, e
 		return conn, nil
 	}
 
+	// 检查是否有其他 goroutine 正在创建
+	vp.roleConnCreatingMu.Lock()
+	creatingChan, isCreating := vp.roleConnCreating[role]
+	if isCreating {
+		// 有其他 goroutine 正在创建，等待它完成
+		vp.roleConnCreatingMu.Unlock()
+		vp.logf("[VoicePool:%s] Another goroutine is creating role conn for '%s', waiting...", vp.sessionID, role)
+
+		select {
+		case <-creatingChan:
+			// 创建完成，重新获取
+			vp.roleConnsMu.RLock()
+			conn, exists := vp.roleConns[role]
+			vp.roleConnsMu.RUnlock()
+			if exists {
+				return conn, nil
+			}
+			return nil, fmt.Errorf("role conn creation completed but conn not found for '%s'", role)
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	// 标记正在创建
+	creatingChan = make(chan struct{})
+	vp.roleConnCreating[role] = creatingChan
+	vp.roleConnCreatingMu.Unlock()
+
+	// 确保完成后清理标记
+	defer func() {
+		vp.roleConnCreatingMu.Lock()
+		delete(vp.roleConnCreating, role)
+		close(creatingChan)
+		vp.roleConnCreatingMu.Unlock()
+	}()
+
 	// 连接不存在，按需创建
 	vp.logf("[VoicePool:%s] Role conn for '%s' not found, creating on-demand...", vp.sessionID, role)
 
@@ -190,16 +243,11 @@ func (vp *VoicePool) GetRoleConn(ctx context.Context, role string) (*RoleConn, e
 		return nil, fmt.Errorf("create role conn on-demand: %w", err)
 	}
 
-	// 双重检查：可能在我们创建期间已被其他 goroutine 创建并注册。
+	// 注册连接
 	vp.roleConnsMu.Lock()
-	defer vp.roleConnsMu.Unlock()
-	if existing, exists := vp.roleConns[role]; exists {
-		vp.logf("[VoicePool:%s] Role conn for '%s' was created by another goroutine", vp.sessionID, role)
-		_ = roleConn.Close()
-		return existing, nil
-	}
-
 	vp.roleConns[role] = roleConn
+	vp.roleConnsMu.Unlock()
+
 	vp.logf("[VoicePool:%s] ✅ Role conn for '%s' (voice=%s) created on-demand", vp.sessionID, role, voice)
 
 	return roleConn, nil

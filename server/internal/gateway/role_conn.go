@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -69,7 +70,7 @@ func NewRoleConn(role string, voice string, config RoleConnConfig) *RoleConn {
 	}
 }
 
-// Connect 连接到 OpenAI Realtime API
+// Connect 连接到 OpenAI Realtime API（带重试）
 func (rc *RoleConn) Connect(ctx context.Context) error {
 	url := fmt.Sprintf("wss://api.openai.com/v1/realtime?model=%s", rc.config.Model)
 	if rc.config.Model == "" {
@@ -86,13 +87,44 @@ func (rc *RoleConn) Connect(ctx context.Context) error {
 		HandshakeTimeout: 15 * time.Second,
 	}
 
-	conn, resp, err := dialer.DialContext(ctx, url, headers)
-	if err != nil {
-		if resp != nil {
-			rc.logger.Printf("[RoleConn:%s] ❌ Dial failed: HTTP %d", rc.role, resp.StatusCode)
-			return fmt.Errorf("dial realtime: status=%d err=%w", resp.StatusCode, err)
+	// 重试机制：最多 3 次，处理 EOF 等临时错误
+	var conn *websocket.Conn
+	var resp *http.Response
+	var err error
+
+	maxRetries := 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		conn, resp, err = dialer.DialContext(ctx, url, headers)
+		if err == nil {
+			// 连接成功
+			break
 		}
-		return fmt.Errorf("dial realtime: %w", err)
+
+		// 记录错误详情
+		if resp != nil {
+			rc.logger.Printf("[RoleConn:%s] ⚠️ Dial attempt %d/%d failed: HTTP %d", rc.role, attempt, maxRetries, resp.StatusCode)
+		} else {
+			rc.logger.Printf("[RoleConn:%s] ⚠️ Dial attempt %d/%d failed: %v", rc.role, attempt, maxRetries, err)
+		}
+
+		// 最后一次尝试，不再重试
+		if attempt == maxRetries {
+			if resp != nil {
+				return fmt.Errorf("dial realtime: status=%d err=%w", resp.StatusCode, err)
+			}
+			return fmt.Errorf("dial realtime: %w", err)
+		}
+
+		// 指数退避：300ms, 1s, 3s
+		backoff := time.Duration(300*attempt*attempt) * time.Millisecond
+		rc.logger.Printf("[RoleConn:%s] Retrying in %v...", rc.role, backoff)
+
+		select {
+		case <-time.After(backoff):
+			// 继续重试
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 
 	rc.connLock.Lock()
@@ -106,26 +138,41 @@ func (rc *RoleConn) Connect(ctx context.Context) error {
 // Initialize 初始化会话配置（固定 voice）
 func (rc *RoleConn) Initialize(ctx context.Context) error {
 	// 构造 session.update 指令，固定 voice
-	update := RealtimeSessionUpdate{
-		Type: "session.update",
-		Session: RealtimeSessionConfig{
-			Modalities:        []string{"text", "audio"},
-			Instructions:      rc.config.Instructions,
-			Voice:             rc.voice, // 固定音色，之后不再改变
-			InputAudioFormat:  rc.config.InputAudioFormat,
-			OutputAudioFormat: rc.config.OutputAudioFormat,
-			InputAudioTranscription: &InputAudioTranscriptionConfig{
-				Model: rc.config.InputAudioTranscriptionModel,
-			},
-			TurnDetection: &TurnDetectionConfig{
-				Type:              "server_vad",
-				Threshold:         0.5,
-				PrefixPaddingMS:   300,
-				SilenceDurationMS: 500,
-				CreateResponse:    false, // 禁用自动响应，由我们控制
-			},
-			Temperature: 0.8,
+	sessionConfig := RealtimeSessionConfig{
+		Modalities:        []string{"text", "audio"},
+		Instructions:      rc.config.Instructions,
+		Voice:             rc.voice, // 固定音色，之后不再改变
+		InputAudioFormat:  rc.config.InputAudioFormat,
+		OutputAudioFormat: rc.config.OutputAudioFormat,
+		InputAudioTranscription: &InputAudioTranscriptionConfig{
+			Model: rc.config.InputAudioTranscriptionModel,
 		},
+		TurnDetection: &TurnDetectionConfig{
+			Type:              "server_vad",
+			Threshold:         0.5,
+			PrefixPaddingMS:   300,
+			SilenceDurationMS: 500,
+			CreateResponse:    false, // 禁用自动响应，由我们控制
+		},
+		Temperature: 0.8,
+	}
+
+	// 如果有工具注册表，添加工具定义
+	if rc.toolRegistry != nil {
+		toolDefs := rc.toolRegistry.GetAllDefinitions()
+		if len(toolDefs) > 0 {
+			tools := make([]interface{}, len(toolDefs))
+			for i, def := range toolDefs {
+				tools[i] = def
+			}
+			sessionConfig.Tools = tools
+			rc.logger.Printf("[RoleConn:%s] 🔧 Registered %d tools to session", rc.role, len(toolDefs))
+		}
+	}
+
+	update := RealtimeSessionUpdate{
+		Type:    "session.update",
+		Session: sessionConfig,
 	}
 
 	// 如果是 ASR 专用连接，禁用音频输出
