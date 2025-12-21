@@ -62,10 +62,17 @@ func NewOpenAIClient(cfg config.LLMProviderConfig) *OpenAIClient {
 // Complete 完成文本生成（OpenAI）
 func (c *OpenAIClient) Complete(ctx context.Context, messages []Message, schema *JSONSchema) (string, error) {
 	reqBody := map[string]any{
-		"model":       c.config.Model,
-		"messages":    messages,
-		"temperature": c.config.Temperature,
-		"max_tokens":  c.config.MaxTokens,
+		"model":                 c.config.Model,
+		"messages":              messages,
+		"temperature":           c.config.Temperature,
+		"max_completion_tokens": c.config.MaxTokens,
+	}
+
+	// gpt-5 系列在 ChatCompletions 下可能会把 token 预算主要消耗在 reasoning，
+	// 导致 message.content 为空且 finish_reason=length（只产出 reasoning tokens）。
+	// 这里默认将 reasoning effort 降到 low，确保能稳定产出可解析的输出内容。
+	if isOpenAIReasoningModel(c.config.Model) {
+		reqBody["reasoning_effort"] = "low"
 	}
 
 	// 如果提供了 schema，使用 JSON mode
@@ -120,7 +127,18 @@ func (c *OpenAIClient) Complete(ctx context.Context, messages []Message, schema 
 		return "", fmt.Errorf("no choices in response")
 	}
 
-	return result.Choices[0].Message.Content, nil
+	content := result.Choices[0].Message.Content
+	if content == "" {
+		return "", fmt.Errorf("empty content in response: %s", string(respBody))
+	}
+
+	return content, nil
+}
+
+func isOpenAIReasoningModel(model string) bool {
+	// 经验规则：gpt-5 / o1 等会产出 reasoning tokens。
+	// 这里用最保守的匹配，避免影响 gpt-4o 等常规模型。
+	return len(model) >= 5 && (model[:5] == "gpt-5" || (len(model) >= 2 && model[:2] == "o1"))
 }
 
 // AnthropicClient Anthropic 客户端

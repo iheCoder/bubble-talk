@@ -61,26 +61,26 @@ func NewDirectorEngine(cfg *config.Config, llmClient llm.Client) *DirectorEngine
 func (d *DirectorEngine) Decide(state *model.SessionState, userInput string) model.DirectorPlan {
 	ctx := context.Background()
 
-	// Layer A: 硬约束校验（Deterministic Guardrails）
-	flowMode := d.inferFlowMode(state, userInput)
-	userMindState := d.inferUserMindState(state, userInput)
-
-	// 生成候选拍点
-	beatCandidates := d.generateBeatCandidates(state, flowMode, userMindState)
-
 	var plan model.DirectorPlan
 
-	// 如果启用 LLM，使用 LLM 进行拍点选择和选角
+	// 如果启用 LLM，让 LLM 完全负责推断（包括 FlowMode）
 	if d.config.EnableLLM && d.llmClient != nil {
-		llmPlan, err := d.decideLLM(ctx, state, userInput, flowMode, userMindState, beatCandidates)
+		llmPlan, err := d.decideLLM(ctx, state, userInput)
 		if err != nil {
 			log.Printf("⚠️ LLM decision failed, falling back to rules: %v", err)
+			// 降级到规则引擎
+			flowMode := d.inferFlowMode(state, userInput)
+			userMindState := d.inferUserMindState(state, userInput)
+			beatCandidates := d.generateBeatCandidates(state, flowMode, userMindState)
 			plan = d.decideWithRules(state, userInput, flowMode, userMindState, beatCandidates)
 		} else {
 			plan = llmPlan
 		}
 	} else {
-		// 使用规则引擎
+		// 使用规则引擎：先推断 FlowMode 和 UserMindState，再生成候选
+		flowMode := d.inferFlowMode(state, userInput)
+		userMindState := d.inferUserMindState(state, userInput)
+		beatCandidates := d.generateBeatCandidates(state, flowMode, userMindState)
 		plan = d.decideWithRules(state, userInput, flowMode, userMindState, beatCandidates)
 	}
 
@@ -227,55 +227,88 @@ func (d *DirectorEngine) generateBeatCandidates(state *model.SessionState, flowM
 }
 
 // decideLLM 使用 LLM 进行决策
+// LLM 模式下，让 LLM 完全负责推断 FlowMode、UserMindState 和选择 Beat/Role
 func (d *DirectorEngine) decideLLM(
 	ctx context.Context,
 	state *model.SessionState,
 	userInput string,
-	flowMode string,
-	userMindState []string,
-	beatCandidates []string,
 ) (model.DirectorPlan, error) {
 	// 构建提示词
 	systemPrompt := d.buildSystemPrompt()
-	userPrompt := d.buildUserPrompt(state, userInput, flowMode, userMindState, beatCandidates)
+	userPrompt := d.buildUserPromptForLLM(state, userInput)
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
 	}
 
-	// 定义 JSON Schema
+	// 定义 JSON Schema（完全符合 OpenAI Structured Outputs 严格要求）
+	// 注意：OpenAI Strict Mode 要求 required 包含所有 properties 中的字段
+	// 所以我们将可选字段（user_must_do, debug）从 properties 中移出
 	schema := &llm.JSONSchema{
 		Name: "director_plan",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"flow_mode":       map[string]any{"type": "string", "enum": []string{"FLOW", "RESCUE"}},
-				"user_mind_state": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-				"intent":          map[string]any{"type": "string"},
-				"next_beat":       map[string]any{"type": "string"},
-				"next_role":       map[string]any{"type": "string"},
-				"output_action":   map[string]any{"type": "string"},
-				"user_must_do": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"type":   map[string]any{"type": "string"},
-						"prompt": map[string]any{"type": "string"},
-					},
-					"required": []string{"type", "prompt"},
+				// 必填字段
+				"flow_mode": map[string]any{
+					"type":        "string",
+					"enum":        []string{"FLOW", "RESCUE"},
+					"description": "流动模式：FLOW(顺流) 或 RESCUE(救场)",
 				},
-				"talk_burst_limit_sec": map[string]any{"type": "integer"},
-				"notes":                map[string]any{"type": "string"},
-				"debug": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"beat_candidates":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-						"beat_choice_reason": map[string]any{"type": "string"},
-						"role_choice_reason": map[string]any{"type": "string"},
-					},
+				"user_mind_state": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "用户心理状态列表，如Partial,Verify,Fog等",
+				},
+				"intent": map[string]any{
+					"type":        "string",
+					"description": "对话意图，如clarify,deepen等",
+				},
+				"next_beat": map[string]any{
+					"type":        "string",
+					"description": "下一个拍点，必须在可用拍点列表中",
+				},
+				"next_role": map[string]any{
+					"type":        "string",
+					"description": "下一个角色，必须在可用角色列表中",
+				},
+				"output_action": map[string]any{
+					"type":        "string",
+					"description": "输出动作，如ask_simple_question等",
+				},
+				"talk_burst_limit_sec": map[string]any{
+					"type":        "integer",
+					"description": "说话时长限制，单位秒",
+				},
+				"tension_goal": map[string]any{
+					"type":        "string",
+					"enum":        []string{"increase", "maintain", "decrease"},
+					"description": "张力目标",
+				},
+				"load_goal": map[string]any{
+					"type":        "string",
+					"enum":        []string{"increase", "maintain", "decrease"},
+					"description": "负荷目标",
+				},
+				"notes": map[string]any{
+					"type":        "string",
+					"description": "决策说明和推理过程",
 				},
 			},
-			"required": []string{"flow_mode", "user_mind_state", "intent", "next_beat", "next_role", "output_action", "talk_burst_limit_sec", "notes"},
+			"required": []string{
+				"flow_mode",
+				"user_mind_state",
+				"intent",
+				"next_beat",
+				"next_role",
+				"output_action",
+				"talk_burst_limit_sec",
+				"tension_goal",
+				"load_goal",
+				"notes",
+			},
+			"additionalProperties": false,
 		},
 		Strict: true,
 	}
@@ -288,16 +321,16 @@ func (d *DirectorEngine) decideLLM(
 
 	// 解析响应
 	var planData struct {
-		FlowMode          string               `json:"flow_mode"`
-		UserMindState     []string             `json:"user_mind_state"`
-		Intent            string               `json:"intent"`
-		NextBeat          string               `json:"next_beat"`
-		NextRole          string               `json:"next_role"`
-		OutputAction      string               `json:"output_action"`
-		UserMustDo        *model.UserMustDo    `json:"user_must_do"`
-		TalkBurstLimitSec int                  `json:"talk_burst_limit_sec"`
-		Notes             string               `json:"notes"`
-		Debug             *model.DirectorDebug `json:"debug"`
+		FlowMode          string   `json:"flow_mode"`
+		UserMindState     []string `json:"user_mind_state"`
+		Intent            string   `json:"intent"`
+		NextBeat          string   `json:"next_beat"`
+		NextRole          string   `json:"next_role"`
+		OutputAction      string   `json:"output_action"`
+		TalkBurstLimitSec int      `json:"talk_burst_limit_sec"`
+		TensionGoal       string   `json:"tension_goal"`
+		LoadGoal          string   `json:"load_goal"`
+		Notes             string   `json:"notes"`
 	}
 
 	if err := json.Unmarshal([]byte(response), &planData); err != nil {
@@ -312,13 +345,11 @@ func (d *DirectorEngine) decideLLM(
 		NextBeat:          planData.NextBeat,
 		NextRole:          planData.NextRole,
 		OutputAction:      planData.OutputAction,
-		UserMustDo:        planData.UserMustDo,
 		TalkBurstLimitSec: planData.TalkBurstLimitSec,
-		TensionGoal:       d.determineTensionGoal(state),
-		LoadGoal:          d.determineLoadGoal(state),
+		TensionGoal:       planData.TensionGoal,
+		LoadGoal:          planData.LoadGoal,
 		StackAction:       "maintain",
 		Notes:             planData.Notes,
-		Debug:             planData.Debug,
 	}
 
 	return plan, nil
@@ -447,27 +478,32 @@ func (d *DirectorEngine) determineLoadGoal(state *model.SessionState) string {
 
 // buildSystemPrompt 构建系统提示词
 func (d *DirectorEngine) buildSystemPrompt() string {
-	return `你是一个专业的对话导演（Director），负责决定下一个拍点（Beat）和角色（Role）。
+	return `你是一个专业的对话导演（Director），负责完全自主地决定下一个拍点（Beat）和角色（Role）。
 
 你的职责：
-1. 根据用户的心理状态选择最合适的拍点
-2. 在泡泡固定角色集合中选择最适合的角色
-3. 明确用户必须完成的输出动作
-4. 控制对话节奏和认知负荷
+1. **推断 FlowMode**：判断用户是顺流（FLOW）还是需要救场（RESCUE）
+2. **推断 UserMindState**：识别用户的心理状态（可多选）
+3. **选择最合适的拍点（Beat）**：基于状态和硬约束
+4. **选择最合适的角色（Role）**：在泡泡固定角色集合中选择
+5. **明确用户输出要求**：user_must_do 必须具体可执行
 
 关键原则：
-- 不写台词，只做决策
-- 选择必须在候选集合内
-- 确保用户有可执行的输出要求
-- 保持结构化输出
+- 你有完全的推断自主权，不依赖预设的状态
+- 必须尊重硬约束（如 output_clock ≥ 90 秒必须选输出型 beat）
+- 选择必须在可用集合内（beats 和 roles）
+- 确保用户有明确的输出要求
+- 保持结构化输出（严格 JSON）
 
 输出格式要求：
 - 严格按照 JSON Schema 返回
-- 所有字段必须填写
-- debug 字段用于工程调试，必须写清选择理由`
+- 所有必填字段必须填写
+- debug 字段用于工程调试，必须写清推理过程
+- flow_mode 和 user_mind_state 是你自主推断的结果，不是输入
+
+记住：你是导演，你决定一切。数据只是参考，最终决策权在你。`
 }
 
-// buildUserPrompt 构建用户提示词
+// buildUserPrompt 构建用户提示词（规则引擎模式）
 func (d *DirectorEngine) buildUserPrompt(
 	state *model.SessionState,
 	userInput string,
@@ -522,6 +558,111 @@ func (d *DirectorEngine) buildUserPrompt(
 		state.OutputClockSec,
 		state.TensionLevel,
 		state.CognitiveLoad,
+		userInput,
+		d.formatRecentTurns(state),
+		strings.Join(beatDescs, "\n"),
+		strings.Join(availableRoles, ", "),
+	)
+}
+
+// buildUserPromptForLLM 构建用户提示词（LLM 模式 - 让 LLM 完全自主推断）
+func (d *DirectorEngine) buildUserPromptForLLM(
+	state *model.SessionState,
+	userInput string,
+) string {
+	// 构建所有可用拍点的描述
+	availableBeats := d.availableBeats
+	beatDescs := make([]string, 0, len(availableBeats))
+	for _, beatID := range availableBeats {
+		if card, ok := d.beatLibrary[beatID]; ok {
+			beatDescs = append(beatDescs, fmt.Sprintf("- **%s**: %s (用户需: %s, 时长: %ds)",
+				beatID, card.Goal, card.UserMustDoType, card.TalkBurstLimitHint))
+		}
+	}
+
+	// 构建角色列表
+	availableRoles := state.AvailableRoles
+	if len(availableRoles) == 0 {
+		availableRoles = d.availableRoles
+	}
+
+	return fmt.Sprintf(`## 当前状态面板
+
+**Mastery Estimate**: %.2f (0-1, 越高表示理解越好)
+**Misconception Tags**: %v (用户的误解标签)
+**Output Clock**: %d 秒 (已讲解时长，≥90 秒需强制用户输出)
+**Tension Level**: %d (1-10, 用户紧张程度)
+**Cognitive Load**: %d (1-10, 用户认知负荷)
+
+**用户信号**:
+- 最近输出长度: %d 字符
+- 响应延迟: %d 毫秒
+
+**用户最新输入**: "%s"
+
+**最近对话历史**:
+%s
+
+---
+
+## 可用拍点库
+
+%s
+
+## 可用角色
+
+%s
+
+---
+
+## 你的任务
+
+作为导演，你需要：
+
+1. **推断 FlowMode**:
+   - **FLOW**: 用户理解顺畅，无需救场（掌握度≥0.4，无误解，负荷不高）
+   - **RESCUE**: 检测到问题，需要调整（有误解/掌握度低/负荷高/困惑）
+
+2. **推断 UserMindState**（可多选）:
+   - **Fog**: 迷雾（有误解 + 认知负荷高）
+   - **Illusion**: 错觉（掌握度低但假装懂了，如"嗯/懂了"）
+   - **Partial**: 半懂（掌握度 0.4-0.7）
+   - **Aha**: 顿悟（掌握度≥0.7 且无误解）
+   - **Verify**: 求证（用户主动提问，有"?"）
+   - **Expand**: 外扩（提到例子、案例）
+   - **Fatigue**: 疲惫（输出短<10字 且延迟长>5000ms）
+   - **Engaged**: 参与（默认状态）
+
+3. **选择合适的拍点（Beat）**:
+   - 如果 Output Clock ≥ 90 秒，**必须**选择 check/feynman/exit_ticket
+   - 如果 Fatigue，选择 minigame/exit_ticket
+   - 如果 FLOW，优先 continue/deepen/check
+   - 如果 RESCUE + Fog，选择 reveal/lens_shift
+   - 如果 RESCUE + Illusion，选择 twist/check
+   - 其他根据状态灵活选择
+
+4. **选择合适的角色（Role）**:
+   - 在 available_roles 中选择
+   - 根据拍点和用户状态匹配
+
+5. **决定张力目标（tension_goal）**:
+   - **increase**: 当前张力低于 4
+   - **decrease**: 当前张力高于 7
+   - **maintain**: 否则保持
+
+6. **决定负荷目标（load_goal）**:
+   - **increase**: 当前负荷低于 4
+   - **decrease**: 当前负荷高于 7
+   - **maintain**: 否则保持
+
+请严格按照 JSON Schema 返回决策。`,
+		state.MasteryEstimate,
+		state.MisconceptionTags,
+		state.OutputClockSec,
+		state.TensionLevel,
+		state.CognitiveLoad,
+		state.Signals.LastUserChars,
+		state.Signals.LastUserLatencyMS,
 		userInput,
 		d.formatRecentTurns(state),
 		strings.Join(beatDescs, "\n"),

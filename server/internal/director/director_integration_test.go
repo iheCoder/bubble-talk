@@ -27,8 +27,8 @@ func TestRealLLMOpenAI(t *testing.T) {
 			OpenAI: config.LLMProviderConfig{
 				APIKey:      apiKey,
 				APIURL:      "https://api.openai.com/v1",
-				Model:       "gpt-4o-mini", // 使用便宜的模型进行测试
-				Temperature: 0.7,
+				Model:       "gpt-5-nano-2025-08-07", // 使用便宜的模型进行测试
+				Temperature: 1,
 				MaxTokens:   2000,
 			},
 		},
