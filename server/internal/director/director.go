@@ -48,8 +48,34 @@ func (d *DirectorEngine) Decide(state *model.SessionState, userInput string) mod
 	}
 }
 
-func (d *DirectorEngine) selectNextRole(_ *model.SessionState) string {
-	return d.availableRoles[d.rng.Intn(len(d.availableRoles))]
+func (d *DirectorEngine) selectNextRole(state *model.SessionState) string {
+	// 使用会话中配置的角色列表，而不是全局配置
+	roles := state.AvailableRoles
+	if len(roles) == 0 {
+		// 兜底：如果没有配置，使用默认角色
+		roles = d.availableRoles
+	}
+
+	// 改为轮流选择，而不是随机。
+	//
+	// 这里不要用 len(state.Turns) 直接取模：
+	// - Turns 同时包含 user/assistant，会导致“用户一说话就切人”，不符合体验预期
+	// - 一些事件路径只 append Timeline 不做 Reduce，会让 Turns 不增长，导致永远选第一个角色
+	//
+	// 我们以“已完成的 assistant 输出次数”作为轮转基准：
+	// - 开场（assistantTurns=0）固定由 roles[0]（通常是 host）发起
+	// - 每次 assistant 输出完成后，下一轮再轮到下一个角色
+	assistantTurns := 0
+	for _, turn := range state.Turns {
+		if turn.Role == "assistant" {
+			assistantTurns++
+		}
+	}
+
+	roleIndex := assistantTurns % len(roles)
+	selectedRole := roles[roleIndex]
+
+	return selectedRole
 }
 
 func (d *DirectorEngine) selectNextBeat(state *model.SessionState) string {

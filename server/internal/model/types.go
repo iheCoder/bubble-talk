@@ -14,6 +14,7 @@ type Bubble struct {
 	Description      string   `json:"description"`
 	Keywords         []string `json:"keywords"`
 	Color            string   `json:"color"`
+	Roles            []string `json:"roles"` // 这个泡泡使用的角色列表
 }
 
 // Turn 表示对话中的一个轮次。
@@ -43,6 +44,8 @@ type SessionState struct {
 	EntryID string `json:"entry_id"`
 	// 泡泡所属领域。
 	Domain string `json:"domain"`
+	// 这个泡泡可用的角色列表（从 Bubble.Roles 复制过来）
+	AvailableRoles []string `json:"available_roles"`
 
 	// 对话的主要目标和结构信息。
 	MainObjective string `json:"main_objective"`

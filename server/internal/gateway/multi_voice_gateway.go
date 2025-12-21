@@ -373,12 +373,15 @@ func (g *MultiVoiceGateway) handleRoleConnEvent(role string, data []byte) error 
 
 	switch eventType {
 	case "response.created":
-		// 响应创建
+		// 响应创建 - 发送 tts_started 事件给前端
 		responseID, _ := event["response"].(map[string]interface{})["id"].(string)
 		conn, _ := g.voicePool.GetRoleConn(g.ctx, role)
 		if conn != nil {
 			conn.SetActiveResponse(responseID)
 		}
+
+		// 发送 tts_started 给前端，包含角色信息
+		g.sendTTSStartedToClient(role)
 
 	case "response.audio.delta":
 		// 音频增量（转发给客户端）
@@ -390,7 +393,8 @@ func (g *MultiVoiceGateway) handleRoleConnEvent(role string, data []byte) error 
 		g.logger.Printf("[MultiVoiceGateway] Role %s transcript delta: %s", role, delta)
 
 	case "response.done":
-		// 响应完成
+		// 响应完成 - 发送 tts_completed 给前端
+		g.sendTTSCompletedToClient(role)
 		return g.handleResponseDone(role, event)
 	}
 
@@ -464,9 +468,38 @@ func (g *MultiVoiceGateway) handleResponseDone(role string, event map[string]int
 		if err := g.voicePool.SyncAssistantText(finalText, role); err != nil {
 			g.logger.Printf("[MultiVoiceGateway] ⚠️  Failed to sync assistant text: %v", err)
 		}
+
+		// 将最终文本发给前端（用于 UI 气泡/字幕）并回灌给 Orchestrator（用于 SessionState 归约，支撑角色轮转）。
+		metadata := g.snapshotActiveMetadata(role)
+		_ = g.sendToClient(&ServerMessage{
+			Type:     EventTypeAssistantText,
+			Text:     finalText,
+			Metadata: metadata,
+			ServerTS: time.Now(),
+		})
+
+		_ = g.forwardToOrchestrator(&ClientMessage{
+			Type:     EventTypeAssistantText,
+			EventID:  fmt.Sprintf("assistant_%d", time.Now().UnixNano()),
+			Text:     finalText,
+			Metadata: metadata,
+			ClientTS: time.Now(),
+		})
 	}
 
 	return nil
+}
+
+func (g *MultiVoiceGateway) snapshotActiveMetadata(role string) map[string]interface{} {
+	g.activeMetadataLock.RLock()
+	metadata := make(map[string]interface{})
+	for k, v := range g.activeMetadata {
+		metadata[k] = v
+	}
+	g.activeMetadataLock.RUnlock()
+
+	metadata["role"] = role
+	return metadata
 }
 
 // SendInstructions 发送指令到指定角色的连接
@@ -517,6 +550,32 @@ func (g *MultiVoiceGateway) sendErrorToClient(errMsg string) {
 	_ = g.sendToClient(&ServerMessage{
 		Type:     "error",
 		Error:    errMsg,
+		ServerTS: time.Now(),
+	})
+}
+
+// sendTTSStartedToClient 发送 TTS 开始事件给客户端（包含角色信息）
+func (g *MultiVoiceGateway) sendTTSStartedToClient(role string) {
+	metadata := g.snapshotActiveMetadata(role)
+
+	g.logger.Printf("[MultiVoiceGateway] 📤 Sending tts_started to client: role=%s", role)
+
+	_ = g.sendToClient(&ServerMessage{
+		Type:     "tts_started",
+		Metadata: metadata,
+		ServerTS: time.Now(),
+	})
+}
+
+// sendTTSCompletedToClient 发送 TTS 完成事件给客户端
+func (g *MultiVoiceGateway) sendTTSCompletedToClient(role string) {
+	g.logger.Printf("[MultiVoiceGateway] 📤 Sending tts_completed to client: role=%s", role)
+
+	_ = g.sendToClient(&ServerMessage{
+		Type: "tts_completed",
+		Metadata: map[string]interface{}{
+			"role": role,
+		},
 		ServerTS: time.Now(),
 	})
 }

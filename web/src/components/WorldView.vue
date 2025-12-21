@@ -67,6 +67,9 @@ const isMicActive = ref(false) // 初始为 false，连接后才启用
 const isMuted = ref(false)
 const isAssistantSpeaking = ref(false)
 const hasSentIntro = ref(false)
+// tts_completed 表示“后端不再发送音频”，但前端播放队列可能还未播完；
+// 用 onDrain 做最终收口，避免说话特效提前结束。
+const ttsDrainArmed = ref(false)
 
 // WebSocket Gateway 相关
 const gateway = ref(null)
@@ -136,8 +139,10 @@ const connect = async () => {
     gateway.value = new BubbleTalkGateway(sessionId)
     audioPlayer.value = new AudioPlayer()
     audioPlayer.value.onDrain = () => {
+      if (!ttsDrainArmed.value) return
       // 以实际音频播放队列耗尽作为“说话结束”，避免 tts_completed(服务端发送完成) 早于前端播放完成。
       isAssistantSpeaking.value = false
+      ttsDrainArmed.value = false
     }
 
     // 设置事件回调
@@ -164,6 +169,7 @@ const connect = async () => {
     gateway.value.onDisconnected = () => {
       isConnected.value = false
       isAssistantSpeaking.value = false
+      ttsDrainArmed.value = false
       console.log('[WorldView] Gateway 断开')
     }
 
@@ -185,16 +191,36 @@ const connect = async () => {
     gateway.value.onTTSStarted = (metadata) => {
       isAssistantSpeaking.value = true
       isThinking.value = false
+      ttsDrainArmed.value = false
+
+      // 关键：从 metadata 中获取角色
       if (metadata?.role) {
         activeRole.value = metadata.role
+        console.log('[WorldView] 🎭 角色说话:', metadata.role)
+      } else {
+        // 兜底：使用专家角色
+        activeRole.value = expertRole.value.id
+        console.warn('[WorldView] ⚠️  metadata 中没有 role，使用默认:', expertRole.value.id)
       }
-      console.log('[WorldView] 🔊 AI 开始说话')
+
+      console.log('[WorldView] 🔊 AI 开始说话, activeRole=', activeRole.value)
     }
 
-    // TTS 完成
-    gateway.value.onTTSCompleted = () => {
-      // 注意：这里不直接把 isAssistantSpeaking 置 false，交由 AudioPlayer.onDrain 收口。
-      console.log('[WorldView] ✅ AI 说话完成')
+    // TTS 完成 - 等待前端音频播放队列耗尽再清除说话状态
+    gateway.value.onTTSCompleted = (metadata) => {
+      ttsDrainArmed.value = true
+      const ctx = audioPlayer.value?.audioContext
+      const nextStartTime = audioPlayer.value?.nextStartTime
+      if (ctx && typeof nextStartTime === 'number') {
+        const remainingSec = Math.max(0, nextStartTime - ctx.currentTime)
+        if (remainingSec <= 0.05) {
+          isAssistantSpeaking.value = false
+          ttsDrainArmed.value = false
+        }
+      }
+      // 也清除 activeRole，避免特效一直显示
+      // activeRole.value = null  // 可选：是否要清除
+      console.log('[WorldView] ✅ AI 说话完成, role:', metadata?.role)
     }
 
     // 接收音频数据并播放
@@ -248,6 +274,7 @@ const disconnect = () => {
   isAssistantSpeaking.value = false
   isThinking.value = false
   hasSentIntro.value = false
+  ttsDrainArmed.value = false
   if (gateway.value) {
     gateway.value.stopRecording()
     gateway.value.disconnect()

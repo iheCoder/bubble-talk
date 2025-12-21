@@ -120,6 +120,7 @@ func (s *Server) handleSessions(c *gin.Context) {
 		SessionID:         newSessionID(),
 		EntryID:           bubble.EntryID,
 		Domain:            bubble.Domain,
+		AvailableRoles:    bubble.Roles, // 从泡泡配置中获取角色列表
 		MainObjective:     bubble.Title,
 		Act:               1,
 		Beat:              "ColdOpen",
@@ -202,14 +203,32 @@ func (s *Server) handleSessionStream(c *gin.Context) {
 	}
 	log.Printf("[API] ✅ WebSocket upgraded successfully")
 
-	// 创建 Gateway 配置
-	roleProfiles := make(map[string]gateway.RoleProfile, len(s.config.Roles))
-	for role, profile := range s.config.Roles {
-		roleProfiles[role] = gateway.RoleProfile{
-			Voice:  profile.Voice,
-			Avatar: profile.Avatar,
+	// 创建 Gateway 配置：只为当前泡泡配置的角色创建 RoleProfiles
+	roleProfiles := make(map[string]gateway.RoleProfile)
+	for _, role := range state.AvailableRoles {
+		if profile, ok := s.config.Roles[role]; ok {
+			roleProfiles[role] = gateway.RoleProfile{
+				Voice:  profile.Voice,
+				Avatar: profile.Avatar,
+			}
+		} else {
+			log.Printf("[API] ⚠️  Role %s not found in global config, skipping", role)
 		}
 	}
+
+	if len(roleProfiles) == 0 {
+		log.Printf("[API] ⚠️  No valid roles found, using default roles")
+		// 兜底：如果没有有效角色，使用全部配置的角色
+		for role, profile := range s.config.Roles {
+			roleProfiles[role] = gateway.RoleProfile{
+				Voice:  profile.Voice,
+				Avatar: profile.Avatar,
+			}
+		}
+	}
+
+	log.Printf("[API] Creating RoleProfiles for roles: %v", state.AvailableRoles)
+
 	gwConfig := gateway.GatewayConfig{
 		OpenAIAPIKey:                 s.config.OpenAI.APIKey,
 		OpenAIRealtimeURL:            s.config.OpenAI.RealtimeURL,
@@ -290,6 +309,15 @@ func (s *Server) handleGatewayEvent(ctx context.Context, sessionID string, gw in
 	case gateway.EventTypeASRFinal:
 		// 用户语音转写完成，交给 Orchestrator 处理
 		return s.orchestrator.HandleUserUtterance(ctx, sessionID, msg.Text, gw)
+
+	case gateway.EventTypeAssistantText:
+		fromRole := ""
+		if msg.Metadata != nil {
+			if v, ok := msg.Metadata["role"].(string); ok {
+				fromRole = v
+			}
+		}
+		return s.orchestrator.HandleAssistantText(ctx, sessionID, msg.Text, fromRole)
 
 	case gateway.EventTypeQuizAnswer:
 		// 用户答题

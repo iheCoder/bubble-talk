@@ -133,6 +133,11 @@ func (o *Orchestrator) HandleUserUtterance(ctx context.Context, sessionID string
 		o.logger.Printf("Failed to append timeline event: %v", err)
 	}
 
+	// 2.1 关键：ASR 直通路径此前只写 Timeline，不归约 SessionState，
+	// 会导致 Turns 不增长，从而导演的“轮流选角色”永远停在第一个角色（通常是 host）。
+	Reduce(state, *event, o.now())
+	state.LastUserUtterance = text
+
 	// 3. 调用Director生成计划
 	plan := o.directorEngine.Decide(state, text)
 
@@ -176,13 +181,50 @@ func (o *Orchestrator) HandleUserUtterance(ctx context.Context, sessionID string
 
 	// 7. 更新会话状态
 	state.LastUserUtterance = text
-	state.OutputClockSec += int(time.Since(state.UpdatedAt).Seconds())
 	state.UpdatedAt = o.now()
 
 	if err := o.store.Save(ctx, state); err != nil {
 		o.logger.Printf("Failed to update session: %v", err)
 	}
 
+	return nil
+}
+
+// HandleAssistantText 处理一次助手输出完成后的文本（用于 Timeline/SessionState 归约）。
+//
+// 契约：
+// - 只做事实记录，不触发 Director/Actor（避免重复驱动输出）
+// - 让 Director 能基于 assistantTurns 做角色轮转
+func (o *Orchestrator) HandleAssistantText(ctx context.Context, sessionID string, text string, fromRole string) error {
+	if text == "" {
+		return nil
+	}
+
+	state, err := o.store.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+
+	event := &model.Event{
+		EventID:   fmt.Sprintf("evt_%d", o.now().UnixNano()),
+		SessionID: sessionID,
+		Type:      "assistant_text",
+		Text:      text,
+		ServerTS:  o.now(),
+	}
+	if _, err := o.timeline.Append(ctx, sessionID, event); err != nil {
+		return fmt.Errorf("append timeline event: %w", err)
+	}
+
+	Reduce(state, *event, o.now())
+	state.UpdatedAt = o.now()
+
+	// 预留：未来可将 fromRole 写入更结构化的字段，便于审计/回放。
+	_ = fromRole
+
+	if err := o.store.Save(ctx, state); err != nil {
+		return fmt.Errorf("save session: %w", err)
+	}
 	return nil
 }
 
