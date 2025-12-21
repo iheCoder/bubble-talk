@@ -15,8 +15,8 @@
 [Strategy: LENS_SHIFT]
 The user is stuck on a specific detail.
 Your task is to REFRAME.
-1. Shift perspective from '{perspective_a}' to '{perspective_b}'.
-2. Explain how '{concept}' works in this new light.
-3. Ask if this new angle helps.
+1. Shift to a different perspective or angle on the concept.
+2. Explain how the concept works in this new light.
+3. Ask if this new angle helps clarify things.
 ```
 

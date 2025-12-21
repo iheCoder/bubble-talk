@@ -15,8 +15,8 @@
 [Strategy: TWIST]
 The user thinks they understand, but it's superficial.
 Your task is to CHALLENGE.
-1. Present this counter-intuitive scenario: "{counter_example}".
-2. Ask: "If your definition is true, then why [Result]?".
+1. Present a counter-intuitive scenario or edge case related to the concept.
+2. Ask: "If that's true, then why does this happen?"
 3. Force them to think. Do not give the answer yet.
 ```
 

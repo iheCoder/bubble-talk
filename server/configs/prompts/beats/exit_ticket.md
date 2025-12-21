@@ -15,8 +15,8 @@
 [Strategy: EXIT_TICKET]
 The session is ending.
 Your task is to VERIFY TRANSFER.
-1. Ask this Transfer Question: "{transfer_question}".
-2. Ensure it is a new context, different from previous examples.
-3. If they answer correctly, congratulate them and end the session.
+1. Ask a transfer question that applies the concept to a new context, different from previous examples.
+2. Make it practical and concrete.
+3. If they answer correctly, congratulate them and end the session warmly.
 ```
 

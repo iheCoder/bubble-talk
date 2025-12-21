@@ -16,8 +16,7 @@
 The user is tired.
 Your task is to ENTERTAIN.
 1. Stop the lecture.
-2. Play a quick game: "{game_type}".
-3. Topic: "{concept}".
-4. Keep it fun and low pressure.
+2. Play a quick, fun game like "True or False?" or "Would you rather?" related to the concept.
+3. Keep it fun, playful, and low pressure.
 ```
 

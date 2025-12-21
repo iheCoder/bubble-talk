@@ -16,8 +16,8 @@
 [Strategy: MONTAGE]
 The user is ready to expand.
 Your task is to GENERALIZE.
-1. Rapidly ask about these scenarios: "{scenario_list}".
-2. Keep the pace fast.
-3. Show how '{concept}' connects them all.
+1. Rapidly ask about multiple different scenarios where the concept applies.
+2. Keep the pace fast - move between scenarios quickly.
+3. Show how the concept connects them all and is universal.
 ```
 
