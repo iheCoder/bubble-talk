@@ -11,9 +11,25 @@ openai:
   api_key: ""  # 可以从环境变量读取，或直接填写
   realtime_url: "wss://api.openai.com/v1/realtime?model=gpt-realtime-2025-08-28"
   model: "gpt-realtime-2025-08-28"
-  voice: "Cedar"
+  voice: "cedar"
   temperature: 0.8
   max_response_output_tokens: 4096
+
+# LLM配置（用于导演决策）
+llm:
+  provider: "openai"  # 可选: "openai", "anthropic"
+  openai:
+    api_key: ""  # 可以从环境变量 LLM_API_KEY 读取
+    api_url: "https://api.openai.com/v1"
+    model: "gpt-4o"  # 或 "gpt-4-turbo"
+    temperature: 0.7
+    max_tokens: 4096  # JSON 结构化输出需要足够的 tokens
+  anthropic:
+    api_key: ""  # 可以从环境变量 ANTHROPIC_API_KEY 读取
+    api_url: "https://api.anthropic.com/v1"
+    model: "claude-3-5-sonnet-20241022"  # 或其他 Claude 模型
+    temperature: 0.7
+    max_tokens: 4096  # JSON 结构化输出需要足够的 tokens
 
 # Gateway配置
 gateway:
@@ -28,6 +44,8 @@ gateway:
 
 # Director Engine配置
 director:
+  # 是否启用 LLM 进行拍点选择和选角决策
+  enable_llm: true
   available_roles:
     - host
     - economist
@@ -80,11 +98,23 @@ paths:
 # 角色配置（可扩展更多字段）
 roles:
   host:
-    voice: "Marin"
+    voice: "marin"
     avatar: "host.png"
   economist:
-    voice: "Cedar"
+    voice: "cedar"
     avatar: "economist.png"
   skeptic:
-    voice: "Juniper"
+    voice: "shimmer"
     avatar: "skeptic.png"
+  educator:
+    voice: "nova"
+    avatar: "educator.png"
+  psychologist:
+    voice: "alloy"
+    avatar: "psychologist.png"
+  coach:
+    voice: "echo"
+    avatar: "coach.png"
+  scientist:
+    voice: "fable"
+    avatar: "scientist.png"
