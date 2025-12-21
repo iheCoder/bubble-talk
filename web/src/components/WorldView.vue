@@ -4,7 +4,6 @@ import { BubbleTalkGateway, AudioPlayer } from '../api/gateway.js'
 import hostAvatar from '../assets/host.png'
 import { getExpertRole } from './worldview/roles.js'
 import WorldHeader from './worldview/WorldHeader.vue'
-import WorldDebugPanel from './worldview/WorldDebugPanel.vue'
 import WorldStage from './worldview/WorldStage.vue'
 import WorldFooter from './worldview/WorldFooter.vue'
 
@@ -354,12 +353,10 @@ onBeforeUnmount(() => {
       @toggle-connection="isRealtimeConnected ? disconnect() : connect()"
     />
 
-    <WorldDebugPanel
-      :is-connected="isRealtimeConnected"
-      :transcript="transcript"
-      :connection-error="connectionError"
-      @clear-error="connectionError = ''"
-    />
+    <div v-if="connectionError" class="error-toast">
+      {{ connectionError }}
+      <button @click="connectionError = ''">✕</button>
+    </div>
 
     <WorldStage
       :role-map="roleMap"
@@ -430,5 +427,31 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.error-toast {
+  position: absolute;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 80, 80, 0.9);
+  color: white;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.error-toast button {
+  background: transparent;
+  border: none;
+  color: white;
+  cursor: pointer;
+  opacity: 0.8;
+  padding: 0;
 }
 </style>
