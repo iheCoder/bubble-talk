@@ -120,16 +120,50 @@ type Event struct {
 
 // DirectorPlan 包含对话导演的计划细节。
 type DirectorPlan struct {
-	UserMindState     []string `json:"user_mind_state"`
-	Intent            string   `json:"intent"`
-	NextBeat          string   `json:"next_beat"`
-	NextRole          string   `json:"next_role"`
-	OutputAction      string   `json:"output_action"`
-	TalkBurstLimitSec int      `json:"talk_burst_limit_sec"`
-	TensionGoal       string   `json:"tension_goal"`
-	LoadGoal          string   `json:"load_goal"`
-	StackAction       string   `json:"stack_action"`
-	Notes             string   `json:"notes"`
+	// 用户心理状态：Fog|Illusion|Partial|Aha|Verify|Expand|Fatigue
+	UserMindState []string `json:"user_mind_state"`
+	// 流动模式：FLOW（顺流）或 RESCUE（救场）
+	FlowMode string `json:"flow_mode"`
+	// 意图：Clarify|Deepen|Branch|Meta|OffTopic|Continue
+	Intent string `json:"intent"`
+	// 下一个拍点
+	NextBeat string `json:"next_beat"`
+	// 下一个角色
+	NextRole string `json:"next_role"`
+	// 输出动作
+	OutputAction string `json:"output_action"`
+	// 用户必须做的事
+	UserMustDo *UserMustDo `json:"user_must_do,omitempty"`
+	// 说话时间限制（秒）
+	TalkBurstLimitSec int `json:"talk_burst_limit_sec"`
+	// 张力目标
+	TensionGoal string `json:"tension_goal"`
+	// 负荷目标
+	LoadGoal string `json:"load_goal"`
+	// 栈操作
+	StackAction string `json:"stack_action"`
+	// 给工程调试的说明
+	Notes string `json:"notes"`
+	// 调试信息
+	Debug *DirectorDebug `json:"debug,omitempty"`
+}
+
+// UserMustDo 定义用户必须执行的输出
+type UserMustDo struct {
+	// 类型：teach_back|choice|example|boundary|transfer
+	Type string `json:"type"`
+	// 给用户的具体要求提示
+	Prompt string `json:"prompt"`
+}
+
+// DirectorDebug 导演决策的调试信息
+type DirectorDebug struct {
+	// 候选拍点列表
+	BeatCandidates []string `json:"beat_candidates,omitempty"`
+	// 选择该拍点的理由
+	BeatChoiceReason string `json:"beat_choice_reason,omitempty"`
+	// 角色选择理由
+	RoleChoiceReason string `json:"role_choice_reason,omitempty"`
 }
 
 // QuizQuestion 表示一个测验问题。

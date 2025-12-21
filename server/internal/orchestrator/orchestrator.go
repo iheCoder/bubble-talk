@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"bubble-talk/server/internal/actor"
+	"bubble-talk/server/internal/config"
 	"bubble-talk/server/internal/director"
 	"bubble-talk/server/internal/gateway"
+	"bubble-talk/server/internal/llm"
 	"bubble-talk/server/internal/model"
 	"bubble-talk/server/internal/session"
 	"bubble-talk/server/internal/timeline"
@@ -35,8 +37,17 @@ func New(store session.Store, timeline timeline.Store, now func() time.Time) *Or
 		now = time.Now
 	}
 
-	// 使用默认配置创建Director和Actor
-	directorEngine := director.NewDirectorEngine(nil, nil)
+	// 使用默认配置创建Director和Actor（不启用LLM）
+	cfg := &config.Config{
+		Director: config.DirectorConfig{
+			EnableLLM:              false,
+			DefaultTalkBurstLimit:  20,
+			HighLoadTalkBurstLimit: 15,
+			OutputClockThreshold:   90,
+		},
+	}
+
+	directorEngine := director.NewDirectorEngine(cfg, nil)
 	actorEngine, err := actor.NewActorEngine("server/configs/prompts")
 	if err != nil {
 		log.Printf("❌ Warning: failed to create actor engine: %v, using nil", err)
@@ -53,6 +64,45 @@ func New(store session.Store, timeline timeline.Store, now func() time.Time) *Or
 		now:            now,
 		logger:         log.Default(),
 	}
+}
+
+// NewWithConfig 创建Orchestrator并使用完整配置（支持LLM）
+func NewWithConfig(
+	store session.Store,
+	timeline timeline.Store,
+	cfg *config.Config,
+	now func() time.Time,
+) (*Orchestrator, error) {
+	if now == nil {
+		now = time.Now
+	}
+
+	// 创建LLM客户端（如果启用）
+	var llmClient llm.Client
+	var err error
+	if cfg.Director.EnableLLM {
+		llmClient, err = llm.NewClient(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create LLM client: %w", err)
+		}
+		log.Printf("✅ LLM client initialized (provider: %s)", cfg.LLM.Provider)
+	}
+
+	// 创建Director和Actor引擎
+	directorEngine := director.NewDirectorEngine(cfg, llmClient)
+	actorEngine, err := actor.NewActorEngine(cfg.Paths.Prompts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create actor engine: %w", err)
+	}
+
+	return &Orchestrator{
+		store:          store,
+		timeline:       timeline,
+		directorEngine: directorEngine,
+		actorEngine:    actorEngine,
+		now:            now,
+		logger:         log.Default(),
+	}, nil
 }
 
 // NewWithEngines 创建Orchestrator并指定Director和Actor引擎

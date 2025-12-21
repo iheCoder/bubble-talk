@@ -48,13 +48,21 @@ func NewServer(cfg *config.Config, store session.Store, timeline timeline.Store)
 		return nil, err
 	}
 
+	// 使用完整配置创建Orchestrator（支持LLM）
+	orch, err := orchestrator.NewWithConfig(store, timeline, cfg, time.Now)
+	if err != nil {
+		// 降级到不使用LLM的版本
+		log.Printf("⚠️ Failed to create orchestrator with LLM: %v, falling back to rule-based", err)
+		orch = orchestrator.New(store, timeline, time.Now)
+	}
+
 	return &Server{
 		config:       cfg,
 		store:        store,
 		timeline:     timeline,
 		bubbles:      bubbles,
 		now:          time.Now,
-		orchestrator: orchestrator.New(store, timeline, time.Now),
+		orchestrator: orch,
 		gateways:     make(map[string]interface{}),
 		realtimeClient: &realtime.Client{
 			APIKey: cfg.OpenAI.APIKey,

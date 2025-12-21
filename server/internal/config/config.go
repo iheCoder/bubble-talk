@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Server   ServerConfig           `yaml:"server"`
 	OpenAI   OpenAIConfig           `yaml:"openai"`
+	LLM      LLMConfig              `yaml:"llm"`
 	Gateway  GatewayConfig          `yaml:"gateway"`
 	Director DirectorConfig         `yaml:"director"`
 	Actor    ActorConfig            `yaml:"actor"`
@@ -38,6 +39,22 @@ type OpenAIConfig struct {
 	MaxResponseOutputTokens int     `yaml:"max_response_output_tokens"`
 }
 
+// LLMConfig LLM 决策配置（用于导演引擎）
+type LLMConfig struct {
+	Provider  string            `yaml:"provider"` // "openai" or "anthropic"
+	OpenAI    LLMProviderConfig `yaml:"openai"`
+	Anthropic LLMProviderConfig `yaml:"anthropic"`
+}
+
+// LLMProviderConfig LLM 提供商配置
+type LLMProviderConfig struct {
+	APIKey      string  `yaml:"api_key"`
+	APIURL      string  `yaml:"api_url"`
+	Model       string  `yaml:"model"`
+	Temperature float64 `yaml:"temperature"`
+	MaxTokens   int     `yaml:"max_tokens"`
+}
+
 type RoleProfile struct {
 	Voice  string `yaml:"voice"`
 	Avatar string `yaml:"avatar"`
@@ -52,6 +69,7 @@ type GatewayConfig struct {
 }
 
 type DirectorConfig struct {
+	EnableLLM              bool     `yaml:"enable_llm"`
 	AvailableRoles         []string `yaml:"available_roles"`
 	AvailableBeats         []string `yaml:"available_beats"`
 	DefaultTalkBurstLimit  int      `yaml:"default_talk_burst_limit"`
@@ -111,6 +129,20 @@ func Load(path string) (*Config, error) {
 		cfg.OpenAI.APIKey = apiKey
 	} else if cfg.OpenAI.APIKey != "" {
 		fmt.Printf("🔑 Using OPENAI_API_KEY from config file\n")
+	}
+
+	// LLM API keys
+	if llmKey := os.Getenv("LLM_API_KEY"); llmKey != "" {
+		fmt.Printf("🔑 Using LLM_API_KEY from environment variable\n")
+		if cfg.LLM.Provider == "openai" {
+			cfg.LLM.OpenAI.APIKey = llmKey
+		} else if cfg.LLM.Provider == "anthropic" {
+			cfg.LLM.Anthropic.APIKey = llmKey
+		}
+	}
+	if anthropicKey := os.Getenv("ANTHROPIC_API_KEY"); anthropicKey != "" {
+		fmt.Printf("🔑 Using ANTHROPIC_API_KEY from environment variable\n")
+		cfg.LLM.Anthropic.APIKey = anthropicKey
 	}
 
 	if model := os.Getenv("OPENAI_REALTIME_MODEL"); model != "" {
