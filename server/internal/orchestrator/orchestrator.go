@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"bubble-talk/server/internal/actor"
@@ -199,31 +200,62 @@ func (o *Orchestrator) HandleUserUtterance(ctx context.Context, sessionID string
 	}
 
 	// 5. 调用Actor生成Prompt
-	prompt := o.buildActorPrompt(state, plan, event.EventID, text)
 
-	o.logger.Printf("[Orchestrator] Actor prompt generated, length=%d", len(prompt.Instructions))
+	// 支持多角色顺序触发（逗号分隔）
+	roles := strings.Split(plan.NextRole, ",")
+	for i := range roles {
+		roles[i] = strings.TrimSpace(roles[i])
+	}
 
-	// 6. 通过Gateway发送指令到Realtime
-	// 关键：在 metadata 中传递 role，MultiVoiceGateway 需要这个字段
+	// 如果包含无效角色，记录警告
+	if len(roles) > 1 {
+		o.logger.Printf("[Orchestrator] 🎭 Multi-role sequence detected: %v", roles)
+	}
+
+	// 6. 为每个角色生成并发送指令
 	if gw != nil {
-		metadata := map[string]interface{}{
-			"role": plan.NextRole, // 关键！指定哪个角色说话
-		}
-
-		// 类型断言，支持两种 Gateway
-		if mvg, ok := gw.(*gateway.MultiVoiceGateway); ok {
-			if err := mvg.SendInstructions(ctx, prompt.Instructions, metadata); err != nil {
-				return fmt.Errorf("send instructions to MultiVoiceGateway: %w", err)
+		for idx, role := range roles {
+			if role == "" {
+				continue
 			}
-		} else if g, ok := gw.(*gateway.Gateway); ok {
-			if err := g.SendInstructions(ctx, prompt.Instructions, metadata); err != nil {
-				return fmt.Errorf("send instructions to Gateway: %w", err)
-			}
-		} else {
-			o.logger.Printf("[Orchestrator] ⚠️  Unknown gateway type, skipping SendInstructions")
-		}
 
-		o.logger.Printf("[Orchestrator] Instructions sent to Realtime successfully")
+			// 为当前角色构建prompt
+			rolePrompt := o.buildActorPrompt(state, model.DirectorPlan{
+				NextRole:    role,
+				Instruction: plan.Instruction,
+			}, event.EventID, text)
+
+			o.logger.Printf("[Orchestrator] Actor prompt for %s generated, length=%d", role, len(rolePrompt.Instructions))
+
+			metadata := map[string]interface{}{
+				"role":     role,
+				"sequence": fmt.Sprintf("%d", idx),        // 🔧 FIX: 必须是字符串
+				"total":    fmt.Sprintf("%d", len(roles)), // 🔧 FIX: 必须是字符串
+			}
+
+			// 类型断言，支持两种 Gateway
+			if mvg, ok := gw.(*gateway.MultiVoiceGateway); ok {
+				if err := mvg.SendInstructions(ctx, rolePrompt.Instructions, metadata); err != nil {
+					o.logger.Printf("[Orchestrator] ❌ Failed to send instructions to %s: %v", role, err)
+					continue
+				}
+			} else if g, ok := gw.(*gateway.Gateway); ok {
+				if err := g.SendInstructions(ctx, rolePrompt.Instructions, metadata); err != nil {
+					o.logger.Printf("[Orchestrator] ❌ Failed to send instructions to %s: %v", role, err)
+					continue
+				}
+			} else {
+				o.logger.Printf("[Orchestrator] ⚠️  Unknown gateway type, skipping SendInstructions")
+				break
+			}
+
+			o.logger.Printf("[Orchestrator] ✅ Instructions sent to %s (sequence %d/%d)", role, idx+1, len(roles))
+
+			// 如果是多角色，在角色之间添加延迟，避免同时说话
+			if len(roles) > 1 && idx < len(roles)-1 {
+				time.Sleep(300 * time.Millisecond)
+			}
+		}
 	}
 
 	// 7. 更新会话状态
@@ -347,28 +379,56 @@ func (o *Orchestrator) HandleWorldEntered(ctx context.Context, sessionID string,
 		o.logger.Printf("Failed to append plan event: %v", err)
 	}
 
-	prompt := o.buildActorPrompt(state, plan, eventID, "")
+	// 支持多角色顺序触发
+	roles := strings.Split(plan.NextRole, ",")
+	for i := range roles {
+		roles[i] = strings.TrimSpace(roles[i])
+	}
+
+	if len(roles) > 1 {
+		o.logger.Printf("[Orchestrator] 🎭 Multi-role opening sequence: %v", roles)
+	}
 
 	// 通过 Gateway 发送指令
 	if gw != nil {
-		metadata := map[string]interface{}{
-			"role": plan.NextRole, // 关键！指定哪个角色说话
-		}
-
-		// 类型断言，支持两种 Gateway
-		if mvg, ok := gw.(*gateway.MultiVoiceGateway); ok {
-			if err := mvg.SendInstructions(ctx, prompt.Instructions, metadata); err != nil {
-				return fmt.Errorf("send instructions to MultiVoiceGateway: %w", err)
+		for idx, role := range roles {
+			if role == "" {
+				continue
 			}
-		} else if g, ok := gw.(*gateway.Gateway); ok {
-			if err := g.SendInstructions(ctx, prompt.Instructions, metadata); err != nil {
-				return fmt.Errorf("send instructions to Gateway: %w", err)
-			}
-		} else {
-			o.logger.Printf("[Orchestrator] ⚠️  Unknown gateway type, skipping SendInstructions")
-		}
 
-		o.logger.Printf("[Orchestrator] Opening instructions sent successfully")
+			rolePrompt := o.buildActorPrompt(state, model.DirectorPlan{
+				NextRole:    role,
+				Instruction: plan.Instruction,
+			}, eventID, "")
+
+			metadata := map[string]interface{}{
+				"role":     role,
+				"sequence": fmt.Sprintf("%d", idx),        // 🔧 FIX: 必须是字符串
+				"total":    fmt.Sprintf("%d", len(roles)), // 🔧 FIX: 必须是字符串
+			}
+
+			// 类型断言，支持两种 Gateway
+			if mvg, ok := gw.(*gateway.MultiVoiceGateway); ok {
+				if err := mvg.SendInstructions(ctx, rolePrompt.Instructions, metadata); err != nil {
+					o.logger.Printf("[Orchestrator] ❌ Failed to send opening to %s: %v", role, err)
+					continue
+				}
+			} else if g, ok := gw.(*gateway.Gateway); ok {
+				if err := g.SendInstructions(ctx, rolePrompt.Instructions, metadata); err != nil {
+					o.logger.Printf("[Orchestrator] ❌ Failed to send opening to %s: %v", role, err)
+					continue
+				}
+			} else {
+				o.logger.Printf("[Orchestrator] ⚠️  Unknown gateway type, skipping SendInstructions")
+				break
+			}
+
+			o.logger.Printf("[Orchestrator] ✅ Opening sent to %s (sequence %d/%d)", role, idx+1, len(roles))
+
+			if len(roles) > 1 && idx < len(roles)-1 {
+				time.Sleep(300 * time.Millisecond)
+			}
+		}
 	}
 
 	state.UpdatedAt = o.now()
