@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"bubble-talk/server/internal/config"
@@ -296,8 +297,8 @@ func (c *TalOpenAIClient) Complete(ctx context.Context, messages []Message, sche
 		return "", fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
-	// Tal 的响应体结构与 OpenAI 的 /chat/completions 相似，尝试按 OpenAI 格式解析
-	var result struct {
+	// First try to parse as OpenAI-style response
+	var oa struct {
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
@@ -305,18 +306,113 @@ func (c *TalOpenAIClient) Complete(ctx context.Context, messages []Message, sche
 		} `json:"choices"`
 	}
 
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("unmarshal response: %w", err)
+	if err := json.Unmarshal(respBody, &oa); err == nil && len(oa.Choices) > 0 {
+		content := oa.Choices[0].Message.Content
+		if content != "" {
+			// Normalize content: it might be wrapped in markdown fences, be an escaped JSON string，
+			// 或包含前后文本。尝试提取有效的 JSON 值并以紧凑的 JSON 格式返回，以便调用方如 director.decideLLM 可以 json.Unmarshal 。
+			trimmed := strings.TrimSpace(content)
+
+			// 如果内容是 markdown 围栏（例如 ```json\n{...}\n```），则去除围栏
+			if strings.HasPrefix(trimmed, "```") {
+				// 去除前导 ``` 和尾部 ```
+				end := strings.LastIndex(trimmed, "```")
+				if end > 3 {
+					inner := trimmed[3:end]
+					inner = strings.TrimSpace(inner)
+					// 如果第一行是类似 "json" 的语言提示，则删除它
+					if idx := strings.IndexAny(inner, "\n\r"); idx > 0 {
+						firstLine := inner[:idx]
+						if isAlphaString(firstLine) {
+							inner = strings.TrimSpace(inner[idx:])
+						}
+					}
+					trimmed = strings.TrimSpace(inner)
+				}
+			}
+
+			// 如果 trimmed 现在看起来像 JSON，尝试解组为通用类型并重新序列化为紧凑格式
+			if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[' || trimmed[0] == '"') {
+				var raw any
+				if err := json.Unmarshal([]byte(trimmed), &raw); err == nil {
+					b, _ := json.Marshal(raw)
+					return string(b), nil
+				}
+
+				// 可能是包含 JSON 对象（转义）的 JSON 字符串，尝试解引号+解组
+				var possible string
+				if err := json.Unmarshal([]byte(trimmed), &possible); err == nil {
+					possible = strings.TrimSpace(possible)
+					if len(possible) > 0 && (possible[0] == '{' || possible[0] == '[') {
+						var raw2 any
+						if err2 := json.Unmarshal([]byte(possible), &raw2); err2 == nil {
+							b, _ := json.Marshal(raw2)
+							return string(b), nil
+						}
+					}
+				}
+			}
+
+			// 作为最后的尝试，如果内容中某处包含 JSON 对象，尝试提取第一个 {
+			if idx := strings.Index(trimmed, "{"); idx >= 0 {
+				suffix := strings.TrimSpace(trimmed[idx:])
+				var raw any
+				if err := json.Unmarshal([]byte(suffix), &raw); err == nil {
+					b, _ := json.Marshal(raw)
+					return string(b), nil
+				}
+			}
+
+			// 回退：返回原始内容
+			return content, nil
+		}
 	}
 
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
+	// If not OpenAI style, try to accept raw JSON object (e.g., Claude returning a JSON object)
+	// Trim leading spaces and check first byte
+	trimmed := bytes.TrimSpace(respBody)
+	if len(trimmed) > 0 {
+		first := trimmed[0]
+		if first == '{' || first == '[' || first == '"' {
+			// Attempt to unmarshal into generic
+			var raw any
+			if err := json.Unmarshal(trimmed, &raw); err == nil {
+				switch v := raw.(type) {
+				case string:
+					// The body was a JSON string containing the content
+					return v, nil
+				case map[string]any, []any:
+					// Return compact JSON string so callers can parse if needed
+					b, _ := json.Marshal(v)
+					return string(b), nil
+				default:
+					b, _ := json.Marshal(v)
+					return string(b), nil
+				}
+			}
+		}
 	}
 
-	content := result.Choices[0].Message.Content
-	if content == "" {
-		return "", fmt.Errorf("empty content in response: %s", string(respBody))
+	// Fallback: return raw body as string
+	if len(respBody) > 0 {
+		return string(respBody), nil
 	}
 
-	return content, nil
+	return "", fmt.Errorf("empty response body")
+}
+
+// helper: check if a string is alphabetic (used to detect language hints like "json")
+func isAlphaString(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+			continue
+		}
+		return false
+	}
+	return true
 }
