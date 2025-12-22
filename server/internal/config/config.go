@@ -70,6 +70,8 @@ type GatewayConfig struct {
 }
 
 type DirectorConfig struct {
+	// Type 决定导演实现：beat | segment
+	Type                   string   `yaml:"type"`
 	EnableLLM              bool     `yaml:"enable_llm"`
 	AvailableRoles         []string `yaml:"available_roles"`
 	AvailableBeats         []string `yaml:"available_beats"`

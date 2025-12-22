@@ -25,7 +25,7 @@ import (
 type Orchestrator struct {
 	store          session.Store
 	timeline       timeline.Store
-	directorEngine *director.DirectorEngine
+	directorEngine director.Director
 	actorEngine    *actor.ActorEngine
 	now            func() time.Time
 	logger         *log.Logger
@@ -47,7 +47,7 @@ func New(store session.Store, timeline timeline.Store, now func() time.Time) *Or
 		},
 	}
 
-	directorEngine := director.NewDirectorEngine(cfg, nil)
+	directorEngine := director.NewDirector(cfg, nil)
 	actorEngine, err := actor.NewActorEngine("server/configs/prompts")
 	if err != nil {
 		log.Printf("❌ Warning: failed to create actor engine: %v, using nil", err)
@@ -89,7 +89,7 @@ func NewWithConfig(
 	}
 
 	// 创建Director和Actor引擎
-	directorEngine := director.NewDirectorEngine(cfg, llmClient)
+	directorEngine := director.NewDirector(cfg, llmClient)
 	actorEngine, err := actor.NewActorEngine(cfg.Paths.Prompts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create actor engine: %w", err)
@@ -109,7 +109,7 @@ func NewWithConfig(
 func NewWithEngines(
 	store session.Store,
 	timeline timeline.Store,
-	directorEngine *director.DirectorEngine,
+	directorEngine director.Director,
 	actorEngine *actor.ActorEngine,
 	logger *log.Logger,
 ) *Orchestrator {

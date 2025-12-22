@@ -26,6 +26,65 @@ type SegmentDirector struct {
 	scripts map[string]*model.Script
 }
 
+// Decide 实现 Director 接口。
+// 将 SegmentPlan 映射为通用 DirectorPlan（角色 + 指令）。
+func (d *SegmentDirector) Decide(state *model.SessionState, userInput string) model.DirectorPlan {
+	ctx := context.Background()
+	segmentPlan, err := d.DecideSegment(ctx, state, userInput)
+	if err != nil {
+		log.Printf("⚠️ Segment decision failed, falling back to minimal directive: %v", err)
+		return model.DirectorPlan{
+			NextRole:    d.fallbackRole(state),
+			Instruction: "Fallback: keep the conversation moving and ask a simple follow-up question.\n",
+		}
+	}
+
+	return model.DirectorPlan{
+		NextRole:    segmentPlan.RoleID,
+		Instruction: d.buildSegmentInstruction(state, userInput, segmentPlan),
+	}
+}
+
+func (d *SegmentDirector) fallbackRole(state *model.SessionState) string {
+	roles := state.AvailableRoles
+	if len(roles) == 0 {
+		roles = d.config.AvailableRoles
+	}
+	if len(roles) == 0 {
+		return "host"
+	}
+	return roles[0]
+}
+
+func (d *SegmentDirector) buildSegmentInstruction(
+	state *model.SessionState,
+	userInput string,
+	plan *model.SegmentPlan,
+) string {
+	var sb strings.Builder
+
+	if state != nil && state.MainObjective != "" {
+		sb.WriteString(fmt.Sprintf("Main Objective: %s\n", state.MainObjective))
+	}
+	if userInput != "" {
+		sb.WriteString(fmt.Sprintf("Last User Input: \"%s\"\n", userInput))
+	}
+	if plan.SegmentID != "" {
+		sb.WriteString(fmt.Sprintf("Segment: %s\n", plan.SegmentID))
+	}
+	if plan.SceneDirection != "" {
+		sb.WriteString(fmt.Sprintf("Scene Direction: %s\n", plan.SceneDirection))
+	}
+	if plan.MaxDurationSec > 0 {
+		sb.WriteString(fmt.Sprintf("Max Duration: %d seconds\n", plan.MaxDurationSec))
+	}
+	if plan.DirectorNotes != "" {
+		sb.WriteString(fmt.Sprintf("Notes: %s\n", plan.DirectorNotes))
+	}
+
+	return sb.String()
+}
+
 // NewSegmentDirector 创建基于 Segment 的导演引擎
 func NewSegmentDirector(cfg *config.Config, llmClient llm.Client) *SegmentDirector {
 	segmentTypes := []string{
