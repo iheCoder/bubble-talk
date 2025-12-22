@@ -45,6 +45,12 @@ type MultiVoiceGateway struct {
 	activeMetadata     map[string]interface{}
 	activeMetadataLock sync.RWMutex
 
+	// ASR 去重（避免 response.done 与 response.audio_transcript.done 重复触发）
+	asrDedupMu          sync.Mutex
+	lastASRResponseID   string
+	lastASRTranscript   string
+	lastASRTranscriptAt time.Time
+
 	// 序列号生成器（用于 ServerMessage）
 	seqCounter int64
 	seqLock    sync.Mutex
@@ -297,6 +303,10 @@ func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 	g.logger.Printf("[MultiVoiceGateway] ASR event: %s", eventType)
 
 	switch eventType {
+	case "error":
+		g.logRealtimeError("ASR", event)
+		return nil
+
 	case "conversation.item.input_audio_transcription.completed":
 		// 用户语音转写完成
 		return g.handleASRTranscriptionCompleted(event)
@@ -339,9 +349,13 @@ func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 func (g *MultiVoiceGateway) handleASRResponseDone(event map[string]interface{}) error {
 	// 从 response 中提取转写
 	var transcript string
+	responseID := ""
 
 	if event["type"] == "response.done" {
 		response, _ := event["response"].(map[string]interface{})
+		if response != nil {
+			responseID, _ = response["id"].(string)
+		}
 		output, _ := response["output"].([]interface{})
 
 		for _, item := range output {
@@ -360,11 +374,19 @@ func (g *MultiVoiceGateway) handleASRResponseDone(event map[string]interface{}) 
 		}
 	} else {
 		// response.audio_transcript.done
+		if v, ok := event["response_id"].(string); ok {
+			responseID = v
+		}
 		transcript, _ = event["transcript"].(string)
 	}
 
 	if transcript == "" {
 		g.logger.Printf("[MultiVoiceGateway] ⚠️ Empty ASR transcript")
+		return nil
+	}
+
+	if g.shouldDropASRResult(responseID, transcript) {
+		g.logger.Printf("[MultiVoiceGateway] ⚠️ Duplicate ASR transcript dropped (response_id=%s)", responseID)
 		return nil
 	}
 
@@ -471,6 +493,10 @@ func (g *MultiVoiceGateway) handleRoleConnEvent(role string, data []byte) error 
 	g.logger.Printf("[MultiVoiceGateway] Role %s event: %s", role, eventType)
 
 	switch eventType {
+	case "error":
+		g.logRealtimeError("Role "+role, event)
+		return nil
+
 	case "response.created":
 		// 响应创建 - 发送 tts_started 事件给前端
 		responseID, _ := event["response"].(map[string]interface{})["id"].(string)
@@ -498,6 +524,89 @@ func (g *MultiVoiceGateway) handleRoleConnEvent(role string, data []byte) error 
 	}
 
 	return nil
+}
+
+const asrDuplicateWindow = 2 * time.Second
+
+// shouldDropASRResult 用于去重 ASR 的重复完成事件。
+//
+// 说明（中文）：
+// 这个函数用于避免 ASR 连接重复触发同一条最终转写（completion）导致的重复上报。
+// ASR 在某些情况下会对同一段语音既产生 response.done（完整 response 包含 output）
+// 又产生 response.audio_transcript.done（单独的转写完成事件），或者客户端/服务端在短时间内
+// 收到同样的转写两次。因此需要简单的去重策略来避免上层（比如 Orchestrator）重复处理相同的文本。
+//
+// 去重策略：
+// 1) 优先基于 responseID 去重：
+//   - 如果本次事件包含非空的 responseID，且与上一次记录的 lastASRResponseID 相同，
+//     则认为是同一次 response 的重复完成事件，直接返回 true（丢弃）。
+//   - 否则将 lastASRResponseID 更新为当前 responseID，同时更新 lastASRTranscript/lastASRTranscriptAt
+//     为当前 transcript 与时间，并返回 false（不丢弃）。
+//     说明：responseID 是最可靠的去重键，因为同一个 response 的不同完成事件（例如 audio_transcript.done
+//     与 response.done）通常会带相同的 response id。
+//
+// 2) 当 responseID 不可用时，回退到基于 transcript 内容的时间窗口去重：
+//   - 如果本次事件的 transcript 与上一次记录的 lastASRTranscript 完全相同，且距离上次记录时间
+//     lastASRTranscriptAt 不超过 asrDuplicateWindow（2 秒），则认为是重复转写，返回 true（丢弃）。
+//   - 否则将 lastASRTranscript 与 lastASRTranscriptAt 更新为当前值并返回 false（不丢弃）。
+//
+// 互斥与并发：
+//   - 函数内部使用 g.asrDedupMu 保护对 lastASRResponseID/lastASRTranscript/lastASRTranscriptAt 的读写，
+//     确保在并发 ASR 事件到达时不会发生竞态条件。
+//
+// 设计考量与例子：
+//   - 常见情况 A：ASR 先发送 response.audio_transcript.done（含 response_id），随后发送 response.done。
+//     两个事件会携带相同的 responseID，基于 responseID 的去重可以直接识别并丢弃第二次。
+//   - 常见情况 B：某些 ASR 回调只包含 transcript 而没有 responseID（或 responseID 为空），
+//     此时使用 transcript + 时间窗口（2s）去重能在短时间内合并重复上报，但不会无限期丢弃
+//     与历史很早之前相同的文本。
+//   - 为什么使用时间窗口：纯文本匹配容易误判（不同时间的相同短语可能是合法的新输入），
+//     因此限制在短时间窗口内才认为是重复。
+//
+// 注意：该函数只负责决定是否丢弃事件；上层在遇到空 transcript 时已提前忽略，因此这里不需要
+// 对空文本做额外判断（但保持覆盖性，当前实现也会正确处理空 transcript）。
+func (g *MultiVoiceGateway) shouldDropASRResult(responseID string, transcript string) bool {
+	g.asrDedupMu.Lock()
+	defer g.asrDedupMu.Unlock()
+
+	if responseID != "" {
+		if responseID == g.lastASRResponseID {
+			return true
+		}
+		g.lastASRResponseID = responseID
+		g.lastASRTranscript = transcript
+		g.lastASRTranscriptAt = time.Now()
+		return false
+	}
+
+	if transcript != "" && transcript == g.lastASRTranscript {
+		if time.Since(g.lastASRTranscriptAt) <= asrDuplicateWindow {
+			return true
+		}
+	}
+
+	g.lastASRTranscript = transcript
+	g.lastASRTranscriptAt = time.Now()
+	return false
+}
+
+func (g *MultiVoiceGateway) logRealtimeError(scope string, event map[string]interface{}) {
+	raw, err := json.Marshal(event)
+	if err != nil {
+		g.logger.Printf("[MultiVoiceGateway] %s error payload marshal failed: %v", scope, err)
+		return
+	}
+
+	g.logger.Printf("[MultiVoiceGateway] %s error payload: %s", scope, string(raw))
+
+	if errObj, ok := event["error"].(map[string]interface{}); ok {
+		g.logger.Printf("[MultiVoiceGateway] %s error detail: type=%v code=%v message=%v",
+			scope,
+			errObj["type"],
+			errObj["code"],
+			errObj["message"],
+		)
+	}
 }
 
 // handleAudioDelta 处理音频增量
