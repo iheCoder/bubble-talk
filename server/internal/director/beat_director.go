@@ -41,6 +41,7 @@ type decisionPlan struct {
 	NextBeat          string
 	NextRole          string
 	OutputAction      string
+	ContentDirection  string
 	TalkBurstLimitSec int
 	TensionGoal       string
 	LoadGoal          string
@@ -117,57 +118,98 @@ func (d *DirectorEngine) buildInstruction(
 	userInput string,
 	decision decisionPlan,
 ) string {
-	var sb strings.Builder
+	_ = state
+	_ = userInput
 
-	sb.WriteString("User Mind State: ")
-	if len(decision.UserMindState) > 0 {
-		sb.WriteString(strings.Join(decision.UserMindState, ", "))
-	} else {
-		sb.WriteString("normal")
-	}
-	sb.WriteString("\n")
+	// Director → Actor 的指令保持极短，避免“写成状态面板”导致执行发散：
+	// State / Beat / Do / Direction
+	//
+	// 说明：
+	// - 主线目标与用户输入属于 [Context]，这里不重复。
+	// - 不输出 FlowMode；UserMindState 已覆盖“顺流/救场”的语义。
 
-	if decision.FlowMode != "" {
-		sb.WriteString(fmt.Sprintf("Flow Mode: %s\n", decision.FlowMode))
-	}
-	if decision.Intent != "" {
-		sb.WriteString(fmt.Sprintf("Intent: %s\n", decision.Intent))
-	}
-	if userInput != "" {
-		sb.WriteString(fmt.Sprintf("Last User Input: \"%s\"\n", userInput))
-	}
-	if state != nil && state.MainObjective != "" {
-		sb.WriteString(fmt.Sprintf("Main Objective: %s\n", state.MainObjective))
+	stateLine := formatMindState(decision.UserMindState)
+	beatLine := decision.NextBeat
+	interactiveMode := directiveForBeat(decision.NextBeat)
+	directionLine := decision.ContentDirection
+	if strings.TrimSpace(directionLine) == "" {
+		directionLine = defaultContentDirection(decision.NextBeat, decision.UserMindState)
 	}
 
-	if decision.NextBeat != "" {
-		sb.WriteString(fmt.Sprintf("Next Beat: %s\n", decision.NextBeat))
-		if card, ok := d.beatLibrary[decision.NextBeat]; ok {
-			if card.Goal != "" {
-				sb.WriteString(fmt.Sprintf("Beat Goal: %s\n", card.Goal))
-			}
-			if card.UserMustDoType != "" {
-				sb.WriteString(fmt.Sprintf("User Must Do: %s\n", card.UserMustDoType))
+	return fmt.Sprintf(
+		"State: %s\nBeat: %s\ninteractive Mode: %s\nDirection: %s\n",
+		stateLine,
+		beatLine,
+		interactiveMode,
+		directionLine,
+	)
+}
+
+func formatMindState(states []string) string {
+	if len(states) == 0 {
+		return "Engaged"
+	}
+
+	// 默认 Engaged 是“兜底标签”；如果同时出现更具体的状态，则去掉 Engaged。
+	if len(states) > 1 {
+		filtered := make([]string, 0, len(states))
+		for _, s := range states {
+			if s != "Engaged" {
+				filtered = append(filtered, s)
 			}
 		}
+		if len(filtered) > 0 {
+			states = filtered
+		}
 	}
-	if decision.OutputAction != "" {
-		sb.WriteString(fmt.Sprintf("Output Action: %s\n", decision.OutputAction))
-	}
-	if decision.TensionGoal != "" {
-		sb.WriteString(fmt.Sprintf("Tension Goal: %s\n", decision.TensionGoal))
-	}
-	if decision.LoadGoal != "" {
-		sb.WriteString(fmt.Sprintf("Load Goal: %s\n", decision.LoadGoal))
-	}
-	if decision.TalkBurstLimitSec > 0 {
-		sb.WriteString(fmt.Sprintf("Talk Burst Limit: %d seconds\n", decision.TalkBurstLimitSec))
-	}
-	if decision.Notes != "" {
-		sb.WriteString(fmt.Sprintf("Notes: %s\n", decision.Notes))
-	}
+	return strings.Join(states, ", ")
+}
 
-	return sb.String()
+func directiveForBeat(beat string) (doLine string) {
+	switch beat {
+	case "continue":
+		return "顺着用户的表达推进一步：用口语化短句解释，讲一小步就停，留出用户回应空间。"
+	case "check":
+		return "用一个简短问题检验理解，逼出用户输出；问完停下来等用户回答。"
+	case "reveal":
+		return "用一个生活化比喻解释核心概念：避免术语，控制在 1–2 句；然后用一句短问句确认是否听懂。"
+	case "deepen":
+		return "追问机制/因果链：让用户把关键连接说出来；只追一条链，不要铺开。"
+	case "twist":
+		return "用一个反例/边界案例挑战用户假设：制造“看起来矛盾”的瞬间，然后让用户解释为什么成立/不成立。"
+	case "lens_shift":
+		return "换一个视角重述并对比两种解释，澄清边界；用对比让用户自己选更贴近的一种。"
+	case "feynman":
+		return "让用户用“教小白”的方式复述；你只负责听漏洞并轻轻补齐，不要替用户讲完。"
+	case "montage":
+		return "给 2–3 个快速场景，让用户找共同模式，促进迁移；每个场景一句话就够。"
+	case "minigame":
+		return "做一个小互动练习，降低负荷，把节奏拉回对话；规则一句话说清，立刻让用户动手。"
+	case "exit_ticket":
+		return "给一道迁移题，检验能否应用到新情境，要求具体回答；问完停下来等用户回答。"
+	default:
+		return ""
+	}
+}
+
+func defaultContentDirection(beat string, states []string) string {
+	// 规则/降级路径下的“内容方向”只给通用写作约束，不注入具体题材，避免硬编码。
+	// LLM 模式下由模型结合上下文与用户画像自行产出。
+	switch beat {
+	case "twist":
+		return "选一个与用户最近一句相关的反例/边界案例（贴近用户背景与语境），让结论在该案例下显得不成立，从而逼出澄清。"
+	case "reveal":
+		return "选一个用户熟悉的日常场景做比喻（贴近用户语境），把抽象概念映射到具体选择/代价/收益。"
+	case "check":
+		return "围绕本轮核心点提一个最小问题（只有一个关键变量），问题要能让用户明确输出。"
+	case "continue":
+		if containsState(states, "Engaged") {
+			return "顺着用户兴趣点自由推进一小步：用一个贴近语境的例子承载概念，不要突然换题材。"
+		}
+		return "沿着最近上下文推进一小步，用贴近语境的例子承载概念。"
+	default:
+		return "优先沿用最近上下文与用户熟悉的素材承载本轮策略，尽量具体、可代入。"
+	}
 }
 
 // inferFlowMode 推断流动模式（FLOW 或 RESCUE）
@@ -357,6 +399,10 @@ func (d *DirectorEngine) decideLLM(
 					"type":        "string",
 					"description": "输出动作，如ask_simple_question等",
 				},
+				"content_direction": map[string]any{
+					"type":        "string",
+					"description": "内容方向参考：基于对话主题、对话上下文、以及对用户的了解描述下角色本轮要说的大概内容方向。",
+				},
 				"talk_burst_limit_sec": map[string]any{
 					"type":        "integer",
 					"description": "说话时长限制，单位秒",
@@ -383,6 +429,7 @@ func (d *DirectorEngine) decideLLM(
 				"next_beat",
 				"next_role",
 				"output_action",
+				"content_direction",
 				"talk_burst_limit_sec",
 				"tension_goal",
 				"load_goal",
@@ -407,6 +454,7 @@ func (d *DirectorEngine) decideLLM(
 		NextBeat          string   `json:"next_beat"`
 		NextRole          string   `json:"next_role"`
 		OutputAction      string   `json:"output_action"`
+		ContentDirection  string   `json:"content_direction"`
 		TalkBurstLimitSec int      `json:"talk_burst_limit_sec"`
 		TensionGoal       string   `json:"tension_goal"`
 		LoadGoal          string   `json:"load_goal"`
@@ -425,6 +473,7 @@ func (d *DirectorEngine) decideLLM(
 		NextBeat:          planData.NextBeat,
 		NextRole:          planData.NextRole,
 		OutputAction:      planData.OutputAction,
+		ContentDirection:  planData.ContentDirection,
 		TalkBurstLimitSec: planData.TalkBurstLimitSec,
 		TensionGoal:       planData.TensionGoal,
 		LoadGoal:          planData.LoadGoal,
@@ -457,6 +506,7 @@ func (d *DirectorEngine) decideWithRules(
 		NextBeat:          nextBeat,
 		NextRole:          nextRole,
 		OutputAction:      outputAction,
+		ContentDirection:  defaultContentDirection(nextBeat, userMindState),
 		TalkBurstLimitSec: d.determineTalkBurstLimit(state),
 		TensionGoal:       d.determineTensionGoal(state),
 		LoadGoal:          d.determineLoadGoal(state),
@@ -562,13 +612,12 @@ func (d *DirectorEngine) buildSystemPrompt() string {
 2. **推断 UserMindState**：识别用户的心理状态（可多选）
 3. **选择最合适的拍点（Beat）**：基于状态和硬约束
 4. **选择最合适的角色（Role）**：在泡泡固定角色集合中选择
-5. **明确用户输出要求**：输出动作必须具体可执行
+5. **给出内容方向**：基于对话主题、对话上下文、以及对用户的了解描述下角色本轮要说的大概内容方向。
 
 关键原则：
 - 你有完全的推断自主权，不依赖预设的状态
 - 必须尊重硬约束（如 output_clock ≥ 90 秒必须选输出型 beat）
 - 选择必须在可用集合内（beats 和 roles）
-- 确保用户有明确的输出要求
 - 保持结构化输出（严格 JSON）
 
 输出格式要求：
@@ -720,6 +769,11 @@ func (d *DirectorEngine) buildUserPromptForLLM(
 4. **选择合适的角色（Role）**:
    - 在 available_roles 中选择
    - 根据拍点和用户状态匹配
+
+5. **生成内容方向（content_direction）**:
+   - 基于对话主题、对话上下文描述下角色本轮要说的大概内容方向。”
+   - 参考用户最新输入与最近对话上下文（不要过于空泛、不要复述目标）
+   - 结合用户画像/领域偏好（如果已知），选择更容易代入的素材
 
 5. **决定张力目标（tension_goal）**:
    - **increase**: 当前张力低于 4
