@@ -350,6 +350,18 @@ func (vp *VoicePool) SyncAssistantText(text string, fromRole string) error {
 
 	var lastErr error
 	for role, conn := range vp.roleConns {
+		// FIX: ASR连接不应该接收assistant消息，它只负责转写用户音频
+		if role == "asr" {
+			vp.logf("[VoicePool:%s] ⏭️  Skipping ASR conn (it should only transcribe, not receive assistant messages)", vp.sessionID)
+			continue
+		}
+
+		// 发送者自己不需要收到自己的消息
+		if role == fromRole {
+			vp.logf("[VoicePool:%s] ⏭️  Skip syncing own message to %s", vp.sessionID, role)
+			continue
+		}
+
 		if err := conn.SyncAssistantText(text, fromRole); err != nil {
 			vp.logf("[VoicePool:%s] ⚠️  Failed to sync assistant text to %s: %v", vp.sessionID, role, err)
 			lastErr = err
