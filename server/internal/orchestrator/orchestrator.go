@@ -192,7 +192,9 @@ func (o *Orchestrator) HandleUserUtterance(ctx context.Context, sessionID string
 	// 3. 调用Director生成计划
 	plan := o.directorEngine.Decide(state, text)
 
-	o.logger.Printf("[Orchestrator] Director plan: role=%s", plan.NextRole)
+	o.logger.Printf("[Orchestrator] 🎬 Director Plan:")
+	o.logger.Printf("  - NextRole: %s", plan.NextRole)
+	o.logger.Printf("  - Instruction (first 200 chars): %.200s...", plan.Instruction)
 
 	// 4. 记录Director计划到Timeline
 	if err := o.appendDirectorPlan(ctx, sessionID, plan); err != nil {
@@ -225,7 +227,9 @@ func (o *Orchestrator) HandleUserUtterance(ctx context.Context, sessionID string
 				Instruction: plan.Instruction,
 			}, event.EventID, text)
 
-			o.logger.Printf("[Orchestrator] Actor prompt for %s generated, length=%d", role, len(rolePrompt.Instructions))
+			o.logger.Printf("[Orchestrator] 📝 Actor Prompt for role=%s:", role)
+			o.logger.Printf("  Length: %d characters", len(rolePrompt.Instructions))
+			o.logger.Printf("  Content (first 500 chars):\n%.500s\n---", rolePrompt.Instructions)
 
 			metadata := map[string]interface{}{
 				"role":     role,
@@ -375,6 +379,11 @@ func (o *Orchestrator) HandleWorldEntered(ctx context.Context, sessionID string,
 	}
 
 	plan := o.directorEngine.Decide(state, "")
+
+	o.logger.Printf("[Orchestrator] 🎬 Opening Director Plan:")
+	o.logger.Printf("  - NextRole: %s", plan.NextRole)
+	o.logger.Printf("  - Instruction (first 200 chars): %.200s...", plan.Instruction)
+
 	if err := o.appendDirectorPlan(ctx, sessionID, plan); err != nil {
 		o.logger.Printf("Failed to append plan event: %v", err)
 	}
@@ -400,6 +409,10 @@ func (o *Orchestrator) HandleWorldEntered(ctx context.Context, sessionID string,
 				NextRole:    role,
 				Instruction: plan.Instruction,
 			}, eventID, "")
+
+			o.logger.Printf("[Orchestrator] 📝 Opening Actor Prompt for role=%s:", role)
+			o.logger.Printf("  Length: %d characters", len(rolePrompt.Instructions))
+			o.logger.Printf("  Content (first 500 chars):\n%.500s\n---", rolePrompt.Instructions)
 
 			metadata := map[string]interface{}{
 				"role":     role,
