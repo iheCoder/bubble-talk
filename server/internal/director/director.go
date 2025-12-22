@@ -19,9 +19,9 @@ type Director interface {
 func NewDirector(cfg *config.Config, llmClient llm.Client) Director {
 	directorType := strings.ToLower(strings.TrimSpace(cfg.Director.Type))
 	switch directorType {
-	case "segment":
-		return NewSegmentDirector(cfg, llmClient)
-	default:
+	case "beats":
 		return NewDirectorEngine(cfg, llmClient)
+	default:
+		return NewSegmentDirector(cfg, llmClient)
 	}
 }

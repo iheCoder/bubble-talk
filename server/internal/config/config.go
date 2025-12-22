@@ -108,6 +108,7 @@ type PathsConfig struct {
 	Prompts  string `yaml:"prompts"`
 	Concepts string `yaml:"concepts"`
 	Bubbles  string `yaml:"bubbles"`
+	Scripts  string `yaml:"scripts"`
 }
 
 // Load 从文件加载配置
@@ -166,6 +167,9 @@ func Load(path string) (*Config, error) {
 	fmt.Printf("   OpenAI Voice: %s\n", cfg.OpenAI.Voice)
 	fmt.Printf("   Bubbles Path: %s\n", cfg.Paths.Bubbles)
 	fmt.Printf("   Prompts Dir: %s\n", cfg.Paths.Prompts)
+	if cfg.Paths.Scripts != "" {
+		fmt.Printf("   Scripts Dir: %s\n", cfg.Paths.Scripts)
+	}
 	fmt.Printf("\n")
 
 	// 验证必需配置

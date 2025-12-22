@@ -4,11 +4,13 @@ import (
 	"bubble-talk/server/internal/config"
 	"bubble-talk/server/internal/llm"
 	"bubble-talk/server/internal/model"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -24,6 +26,9 @@ type SegmentDirector struct {
 
 	// 脚本存储（简化实现，实际应该是数据库）
 	scripts map[string]*model.Script
+
+	// 脚本目录（entry_id -> {scriptsDir}/{entry_id}.md）
+	scriptsDir string
 }
 
 // Decide 实现 Director 接口。
@@ -87,6 +92,11 @@ func (d *SegmentDirector) buildSegmentInstruction(
 
 // NewSegmentDirector 创建基于 Segment 的导演引擎
 func NewSegmentDirector(cfg *config.Config, llmClient llm.Client) *SegmentDirector {
+	scriptsDir := cfg.Paths.Scripts
+	if scriptsDir == "" {
+		scriptsDir = defaultScriptsDir
+	}
+
 	segmentTypes := []string{
 		"ColdOpen",   // 开场冲突
 		"Setup",      // 定义问题边界
@@ -104,6 +114,7 @@ func NewSegmentDirector(cfg *config.Config, llmClient llm.Client) *SegmentDirect
 		llmClient:    llmClient,
 		segmentTypes: segmentTypes,
 		scripts:      make(map[string]*model.Script),
+		scriptsDir:   scriptsDir,
 	}
 }
 
@@ -543,12 +554,8 @@ var planData struct {
 	UserIntent     string   `json:"user_intent"`
 	UserMindState  []string `json:"user_mind_state"`
 
-	// response_approach may be an object (beat strategy, user intent, user state)
-	ResponseApproach struct {
-		BeatStrategy string `json:"beat_strategy"`
-		UserIntent   string `json:"user_intent"`
-		UserState    string `json:"user_state"`
-	} `json:"response_approach"`
+	// response_approach 可能是 string 或 object
+	ResponseApproach responseApproach `json:"response_approach"`
 
 	NeedUserOutput bool   `json:"need_user_output"`
 	NarrativeMode  string `json:"narrative_mode"`
@@ -570,6 +577,37 @@ var planData struct {
 	MaxDurationSec   int    `json:"max_duration_sec"`
 	ScriptReference  string `json:"script_reference"`
 	DirectorNotes    string `json:"director_notes"`
+}
+
+type responseApproach struct {
+	BeatStrategy string `json:"beat_strategy"`
+	UserIntent   string `json:"user_intent"`
+	UserState    string `json:"user_state"`
+	Value        string
+}
+
+func (r *responseApproach) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil
+	}
+
+	if data[0] == '"' {
+		var value string
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		r.Value = value
+		return nil
+	}
+
+	type alias responseApproach
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = responseApproach(decoded)
+	return nil
 }
 
 // decideSegmentWithLLM 使用 LLM 决策 Segment
@@ -889,13 +927,27 @@ func (d *SegmentDirector) getOrLoadScript(entryID string) (*model.Script, error)
 		return script, nil
 	}
 
-	// TODO: 从数据库或文件加载剧本
-	// 这里返回一个示例剧本
+	// TODO: 从数据库加载剧本（当前优先从本地脚本目录读取）
+	story := ""
+	if scriptPath, ok := d.resolveScriptPath(entryID); ok {
+		content, err := os.ReadFile(scriptPath)
+		if err != nil {
+			log.Printf("component=segment_director method=getOrLoadScript entry_id=%s script_path=%s msg=read_script_failed err=%v", entryID, scriptPath, err)
+		} else {
+			// 保留原文结构，供 LLM 对齐与改写
+			story = string(content)
+		}
+	}
+
+	if story == "" {
+		story = d.getDefaultScript(entryID)
+	}
+
 	script := &model.Script{
 		ScriptID:      scriptID,
 		EntryID:       entryID,
-		OriginalStory: d.getDefaultScript(entryID),
-		CurrentStory:  d.getDefaultScript(entryID),
+		OriginalStory: story,
+		CurrentStory:  story,
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 		Version:       "1.0",
@@ -903,6 +955,27 @@ func (d *SegmentDirector) getOrLoadScript(entryID string) (*model.Script, error)
 
 	d.scripts[scriptID] = script
 	return script, nil
+}
+
+const defaultScriptsDir = "server/configs/scripts"
+
+// resolveScriptPath 根据 entry_id 解析剧本路径。
+func (d *SegmentDirector) resolveScriptPath(entryID string) (string, bool) {
+	if entryID == "" {
+		return "", false
+	}
+
+	candidate := filepath.Join(d.scriptsDir, entryID+".md")
+	if fileExists(candidate) {
+		return candidate, true
+	}
+
+	return "", false
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // getDefaultScript 获取默认剧本（示例）
