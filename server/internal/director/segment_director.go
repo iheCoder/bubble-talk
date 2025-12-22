@@ -727,15 +727,24 @@ func (d *SegmentDirector) applySegmentGuardrails(
 
 // buildSegmentSystemPromptV2 构建系统提示词（从文件加载）
 func (d *SegmentDirector) buildSegmentSystemPromptV2() string {
-	// 尝试从文件加载
-	promptPath := "internal/director/prompts/segment_director_system.txt"
-	content, err := os.ReadFile(promptPath)
-	if err != nil {
-		// 如果文件不存在，使用内嵌的简化版本
-		log.Printf("⚠️ Failed to load prompt file: %v, using embedded prompt", err)
-		return d.getEmbeddedSystemPrompt()
+	// 尝试从文件加载（兼容不同运行目录）
+	promptPaths := []string{
+		"server/internal/director/prompts/segment_director_system.txt",
+		"internal/director/prompts/segment_director_system.txt",
 	}
-	return string(content)
+
+	var lastErr error
+	for _, promptPath := range promptPaths {
+		content, err := os.ReadFile(promptPath)
+		if err == nil {
+			return string(content)
+		}
+		lastErr = err
+	}
+
+	// 如果文件不存在，使用内嵌的简化版本
+	log.Printf("⚠️ Failed to load prompt file: %v, using embedded prompt", lastErr)
+	return d.getEmbeddedSystemPrompt()
 }
 
 // getEmbeddedSystemPrompt 内嵌的系统提示词（备用）
