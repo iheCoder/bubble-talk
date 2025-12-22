@@ -179,8 +179,8 @@ func (a *ActorEngine) Validate(prompt ActorPrompt) error {
 			return fmt.Errorf("missing required section: %s", section)
 		}
 	}
-	if len(prompt.Instructions) > 2000 {
-		return fmt.Errorf("instructions too long: %d > 2000", len(prompt.Instructions))
+	if len(prompt.Instructions) > 10000 {
+		return fmt.Errorf("instructions too long: %d > 10000", len(prompt.Instructions))
 	}
 	return nil
 }
