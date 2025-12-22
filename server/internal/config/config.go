@@ -41,9 +41,10 @@ type OpenAIConfig struct {
 
 // LLMConfig LLM 决策配置（用于导演引擎）
 type LLMConfig struct {
-	Provider  string            `yaml:"provider"` // "openai" or "anthropic"
+	Provider  string            `yaml:"provider"` // "openai", "anthropic" or "talopenai"
 	OpenAI    LLMProviderConfig `yaml:"openai"`
 	Anthropic LLMProviderConfig `yaml:"anthropic"`
+	TalOpenAI LLMProviderConfig `yaml:"talopenai"`
 }
 
 // LLMProviderConfig LLM 提供商配置
@@ -138,6 +139,8 @@ func Load(path string) (*Config, error) {
 			cfg.LLM.OpenAI.APIKey = llmKey
 		} else if cfg.LLM.Provider == "anthropic" {
 			cfg.LLM.Anthropic.APIKey = llmKey
+		} else if cfg.LLM.Provider == "talopenai" {
+			cfg.LLM.TalOpenAI.APIKey = llmKey
 		}
 	}
 	if anthropicKey := os.Getenv("ANTHROPIC_API_KEY"); anthropicKey != "" {

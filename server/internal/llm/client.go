@@ -38,6 +38,8 @@ func NewClient(cfg *config.Config) (Client, error) {
 		return NewOpenAIClient(cfg.LLM.OpenAI), nil
 	case "anthropic":
 		return NewAnthropicClient(cfg.LLM.Anthropic), nil
+	case "talopenai":
+		return NewTalOpenAIClient(cfg.LLM.TalOpenAI), nil
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.LLM.Provider)
 	}
@@ -230,4 +232,91 @@ func (c *AnthropicClient) Complete(ctx context.Context, messages []Message, sche
 	}
 
 	return result.Content[0].Text, nil
+}
+
+// TalOpenAIClient 兼容 OpenAI 的 Tal 内部 openai-compatible 服务
+type TalOpenAIClient struct {
+	config     config.LLMProviderConfig
+	httpClient *http.Client
+}
+
+// NewTalOpenAIClient 创建 TalOpenAI 客户端
+func NewTalOpenAIClient(cfg config.LLMProviderConfig) *TalOpenAIClient {
+	return &TalOpenAIClient{
+		config: cfg,
+		httpClient: &http.Client{
+			Timeout: 60 * time.Second,
+		},
+	}
+}
+
+// Complete 完成文本生成（Tal OpenAI-compatible）
+func (c *TalOpenAIClient) Complete(ctx context.Context, messages []Message, schema *JSONSchema) (string, error) {
+	// 构造与 OpenAI chat/completions 类似的请求体
+	reqBody := map[string]any{
+		"model":    c.config.Model,
+		"messages": messages,
+		"stream":   false,
+	}
+
+	if schema != nil {
+		reqBody["response_format"] = map[string]any{
+			"type":        "json_schema",
+			"json_schema": schema,
+		}
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	// Endpoint provided in the user's example uses path /openai-compatible/v1/chat/completions
+	req, err := http.NewRequestWithContext(ctx, "POST", c.config.APIURL+"/openai-compatible/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	// Tal uses Bearer in Authorization header in the user's curl example
+	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// Tal 的响应体结构与 OpenAI 的 /chat/completions 相似，尝试按 OpenAI 格式解析
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("no choices in response")
+	}
+
+	content := result.Choices[0].Message.Content
+	if content == "" {
+		return "", fmt.Errorf("empty content in response: %s", string(respBody))
+	}
+
+	return content, nil
 }
