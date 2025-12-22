@@ -537,6 +537,41 @@ func (d *SegmentDirector) generateSegmentCandidates(
 	return candidates
 }
 
+var planData struct {
+	RoleID         string   `json:"role_id"`
+	SceneDirection string   `json:"scene_direction"`
+	UserIntent     string   `json:"user_intent"`
+	UserMindState  []string `json:"user_mind_state"`
+
+	// response_approach may be an object (beat strategy, user intent, user state)
+	ResponseApproach struct {
+		BeatStrategy string `json:"beat_strategy"`
+		UserIntent   string `json:"user_intent"`
+		UserState    string `json:"user_state"`
+	} `json:"response_approach"`
+
+	NeedUserOutput bool   `json:"need_user_output"`
+	NarrativeMode  string `json:"narrative_mode"`
+	NarrativeTone  string `json:"narrative_tone"`
+	TeachingGoal   string `json:"teaching_goal"`
+
+	// expected_user_output can be an object describing the prompt/hint/target length/type
+	ExpectedUserOutput struct {
+		PromptHint   string `json:"prompt_hint"`
+		TargetLength string `json:"target_length"`
+		Type         string `json:"type"`
+	} `json:"expected_user_output"`
+
+	// Some models return duration as beats
+	DurationBeats int `json:"duration_beats"`
+
+	UserMustDoType   string `json:"user_must_do_type"`
+	UserMustDoPrompt string `json:"user_must_do_prompt"`
+	MaxDurationSec   int    `json:"max_duration_sec"`
+	ScriptReference  string `json:"script_reference"`
+	DirectorNotes    string `json:"director_notes"`
+}
+
 // decideSegmentWithLLM 使用 LLM 决策 Segment
 // 核心：让 LLM 基于剧本、已发生的故事、用户交互，决定具体的剧情戏份和回应策略
 func (d *SegmentDirector) decideSegmentWithLLM(
@@ -611,23 +646,6 @@ func (d *SegmentDirector) decideSegmentWithLLM(
 	response, err := d.llmClient.Complete(ctx, messages, schema)
 	if err != nil {
 		return nil, fmt.Errorf("LLM complete: %w", err)
-	}
-
-	var planData struct {
-		RoleID           string   `json:"role_id"`
-		SceneDirection   string   `json:"scene_direction"`
-		UserIntent       string   `json:"user_intent"`
-		UserMindState    []string `json:"user_mind_state"`
-		ResponseApproach string   `json:"response_approach"`
-		NeedUserOutput   bool     `json:"need_user_output"`
-		NarrativeMode    string   `json:"narrative_mode"`
-		NarrativeTone    string   `json:"narrative_tone"`
-		TeachingGoal     string   `json:"teaching_goal"`
-		UserMustDoType   string   `json:"user_must_do_type"`
-		UserMustDoPrompt string   `json:"user_must_do_prompt"`
-		MaxDurationSec   int      `json:"max_duration_sec"`
-		ScriptReference  string   `json:"script_reference"`
-		DirectorNotes    string   `json:"director_notes"`
 	}
 
 	if err := json.Unmarshal([]byte(response), &planData); err != nil {
