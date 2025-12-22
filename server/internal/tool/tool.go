@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 )
 
-// ToolDefinition 定义工具的元数据（OpenAI Function Calling格式）
+// ToolDefinition 定义工具的元数据（OpenAI Realtime API格式）
+// 直接使用扁平结构而不是嵌套function字段
 type ToolDefinition struct {
-	Type     string             `json:"type"`     // "function"
-	Name     string             `json:"name"`     // 工具名称
-	Function FunctionDefinition `json:"function"` // 函数定义
+	Type        string                 `json:"type"`        // "function"
+	Name        string                 `json:"name"`        // 工具名称
+	Description string                 `json:"description"` // 工具描述
+	Parameters  map[string]interface{} `json:"parameters"`  // JSON Schema格式的参数定义
 }
 
-// FunctionDefinition 函数定义
+// FunctionDefinition 函数定义（保留用于向后兼容）
+// 已废弃：新代码应该直接使用ToolDefinition
 type FunctionDefinition struct {
 	Name        string                 `json:"name"`        // 函数名称
 	Description string                 `json:"description"` // 函数描述
@@ -44,7 +47,8 @@ func NewToolRegistry() *ToolRegistry {
 // Register 注册工具
 func (r *ToolRegistry) Register(executor ToolExecutor) {
 	def := executor.GetDefinition()
-	r.tools[def.Function.Name] = executor
+	// 使用name字段而不是嵌套的function.name
+	r.tools[def.Name] = executor
 }
 
 // Get 获取工具执行器

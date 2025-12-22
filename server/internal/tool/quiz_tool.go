@@ -38,36 +38,33 @@ func NewQuizTool(onQuizCreated func(QuizData)) *QuizTool {
 // GetDefinition 返回工具定义
 func (q *QuizTool) GetDefinition() ToolDefinition {
 	return ToolDefinition{
-		Type: "function",
-		Name: "show_quiz",
-		Function: FunctionDefinition{
-			Name:        "show_quiz",
-			Description: "向用户展示一道选择题，用于检验理解或推动对话。只有在导演判断需要测评、检验或让用户做选择时才调用。",
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"quiz_id": map[string]interface{}{
-						"type":        "string",
-						"description": "题目的唯一标识",
-					},
-					"question": map[string]interface{}{
-						"type":        "string",
-						"description": "题目文本，用口语化的方式提出问题",
-					},
-					"options": map[string]interface{}{
-						"type": "array",
-						"items": map[string]interface{}{
-							"type": "string",
-						},
-						"description": "选项列表，每个选项是一个字符串",
-					},
-					"context": map[string]interface{}{
-						"type":        "string",
-						"description": "题目的上下文说明（可选）",
-					},
+		Type:        "function",
+		Name:        "show_quiz",
+		Description: "向用户展示一道选择题，用于检验理解或推动对话。只有在导演判断需要测评、检验或让用户做选择时才调用。",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"quiz_id": map[string]interface{}{
+					"type":        "string",
+					"description": "题目的唯一标识",
 				},
-				"required": []string{"quiz_id", "question", "options"},
+				"question": map[string]interface{}{
+					"type":        "string",
+					"description": "题目文本，用口语化的方式提出问题",
+				},
+				"options": map[string]interface{}{
+					"type": "array",
+					"items": map[string]interface{}{
+						"type": "string",
+					},
+					"description": "选项列表，每个选项是一个字符串",
+				},
+				"context": map[string]interface{}{
+					"type":        "string",
+					"description": "题目的上下文说明（可选）",
+				},
 			},
+			"required": []string{"quiz_id", "question", "options"},
 		},
 	}
 }
