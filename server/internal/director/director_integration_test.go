@@ -5,6 +5,7 @@ import (
 	"bubble-talk/server/internal/llm"
 	"bubble-talk/server/internal/model"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,8 +15,7 @@ import (
 // 运行: go test -v -run TestRealLLMOpenAI ./server/internal/director/... -tags=integration
 func TestRealLLMOpenAI(t *testing.T) {
 	// 跳过条件：没有 API Key 或没有指定 -tags=integration
-	//apiKey := os.Getenv("LLM_API_KEY")
-	apiKey := os.Getenv("OPENAI_API_KEY")
+	apiKey := os.Getenv("LLM_API_KEY")
 	if apiKey == "" {
 		t.Skip("⏭️  Skipping real LLM test: LLM_API_KEY not set")
 	}
@@ -78,31 +78,21 @@ func TestRealLLMOpenAI(t *testing.T) {
 		plan := director.Decide(state, userInput)
 
 		// 验证关键字段
-		if plan.FlowMode == "" {
-			t.Error("❌ flow_mode should not be empty")
-		}
-		if plan.NextBeat == "" {
-			t.Error("❌ next_beat should not be empty")
-		}
 		if plan.NextRole == "" {
 			t.Error("❌ next_role should not be empty")
 		}
+		if plan.Instruction == "" {
+			t.Error("❌ instruction should not be empty")
+		}
 
 		// 验证 RESCUE 模式（有误解）
-		if plan.FlowMode != "RESCUE" {
-			t.Logf("⚠️  Expected RESCUE mode, got %s (still valid, just different strategy)", plan.FlowMode)
+		if !strings.Contains(plan.Instruction, "Flow Mode: RESCUE") {
+			t.Logf("⚠️  Expected RESCUE mode, got instruction: %s", plan.Instruction)
 		}
 
 		t.Logf("✅ Real LLM Decision:")
-		t.Logf("   FlowMode: %s", plan.FlowMode)
-		t.Logf("   UserMindState: %v", plan.UserMindState)
-		t.Logf("   NextBeat: %s", plan.NextBeat)
 		t.Logf("   NextRole: %s", plan.NextRole)
-		t.Logf("   OutputAction: %s", plan.OutputAction)
-		t.Logf("   Notes: %s", plan.Notes)
-		if plan.Debug != nil {
-			t.Logf("   BeatChoiceReason: %s", plan.Debug.BeatChoiceReason)
-		}
+		t.Logf("   Instruction: %s", plan.Instruction)
 	})
 
 	// 场景 2: 用户顺流状态，小步推进
@@ -132,20 +122,16 @@ func TestRealLLMOpenAI(t *testing.T) {
 		plan := director.Decide(state, userInput)
 
 		// 验证关键字段
-		if plan.FlowMode == "" {
-			t.Error("❌ flow_mode should not be empty")
+		if plan.NextRole == "" {
+			t.Error("❌ next_role should not be empty")
 		}
-		if plan.NextBeat == "" {
-			t.Error("❌ next_beat should not be empty")
+		if plan.Instruction == "" {
+			t.Error("❌ instruction should not be empty")
 		}
 
 		t.Logf("✅ Real LLM Decision (Flow State):")
-		t.Logf("   FlowMode: %s", plan.FlowMode)
-		t.Logf("   UserMindState: %v", plan.UserMindState)
-		t.Logf("   NextBeat: %s", plan.NextBeat)
 		t.Logf("   NextRole: %s", plan.NextRole)
-		t.Logf("   OutputAction: %s", plan.OutputAction)
-		t.Logf("   Notes: %s", plan.Notes)
+		t.Logf("   Instruction: %s", plan.Instruction)
 	})
 
 	// 场景 3: 用户疲惫，降低负荷
@@ -173,24 +159,25 @@ func TestRealLLMOpenAI(t *testing.T) {
 		plan := director.Decide(state, userInput)
 
 		// 验证关键字段
-		if plan.FlowMode == "" {
-			t.Error("❌ flow_mode should not be empty")
+		if plan.NextRole == "" {
+			t.Error("❌ next_role should not be empty")
 		}
-		if plan.NextBeat == "" {
-			t.Error("❌ next_beat should not be empty")
+		if plan.Instruction == "" {
+			t.Error("❌ instruction should not be empty")
 		}
 
 		// 疲惫状态应该倾向于 minigame 或 exit_ticket
-		isLowLoadBeat := plan.NextBeat == "minigame" || plan.NextBeat == "exit_ticket"
-		if !isLowLoadBeat {
-			t.Logf("⚠️  Expected low-load beat (minigame/exit_ticket), got %s (still valid)", plan.NextBeat)
+		nextBeat := extractNextBeat(plan.Instruction)
+		if nextBeat != "" {
+			isLowLoadBeat := nextBeat == "minigame" || nextBeat == "exit_ticket"
+			if !isLowLoadBeat {
+				t.Logf("⚠️  Expected low-load beat (minigame/exit_ticket), got %s (still valid)", nextBeat)
+			}
 		}
 
 		t.Logf("✅ Real LLM Decision (Fatigue State):")
-		t.Logf("   FlowMode: %s", plan.FlowMode)
-		t.Logf("   UserMindState: %v", plan.UserMindState)
-		t.Logf("   NextBeat: %s (should be low-load)", plan.NextBeat)
-		t.Logf("   TalkBurstLimitSec: %d (should be short)", plan.TalkBurstLimitSec)
+		t.Logf("   NextRole: %s", plan.NextRole)
+		t.Logf("   Instruction: %s", plan.Instruction)
 	})
 
 	// 场景 4: 输出时钟超时，强制输出型 Beat
@@ -218,15 +205,15 @@ func TestRealLLMOpenAI(t *testing.T) {
 		plan := director.Decide(state, userInput)
 
 		// 输出时钟超时应该强制选择输出型 Beat
-		isOutputBeat := plan.NextBeat == "check" || plan.NextBeat == "feynman" || plan.NextBeat == "exit_ticket"
-		if !isOutputBeat {
-			t.Logf("⚠️  Expected output beat (check/feynman/exit_ticket), got %s", plan.NextBeat)
+		nextBeat := extractNextBeat(plan.Instruction)
+		isOutputBeat := nextBeat == "check" || nextBeat == "feynman" || nextBeat == "exit_ticket"
+		if nextBeat != "" && !isOutputBeat {
+			t.Logf("⚠️  Expected output beat (check/feynman/exit_ticket), got %s", nextBeat)
 		}
 
 		t.Logf("✅ Real LLM Decision (Timeout):")
 		t.Logf("   OutputClock: %d sec (threshold: 90)", state.OutputClockSec)
-		t.Logf("   NextBeat: %s (should be output-forcing)", plan.NextBeat)
-		t.Logf("   FlowMode: %s", plan.FlowMode)
+		t.Logf("   Instruction: %s", plan.Instruction)
 	})
 }
 
@@ -295,23 +282,16 @@ func TestRealLLMClaude(t *testing.T) {
 	plan := director.Decide(state, userInput)
 
 	// 验证关键字段
-	if plan.FlowMode == "" {
-		t.Error("❌ flow_mode should not be empty")
-	}
-	if plan.NextBeat == "" {
-		t.Error("❌ next_beat should not be empty")
-	}
 	if plan.NextRole == "" {
 		t.Error("❌ next_role should not be empty")
 	}
+	if plan.Instruction == "" {
+		t.Error("❌ instruction should not be empty")
+	}
 
 	t.Logf("✅ Claude LLM Decision:")
-	t.Logf("   FlowMode: %s", plan.FlowMode)
-	t.Logf("   UserMindState: %v", plan.UserMindState)
-	t.Logf("   NextBeat: %s", plan.NextBeat)
 	t.Logf("   NextRole: %s", plan.NextRole)
-	t.Logf("   OutputAction: %s", plan.OutputAction)
-	t.Logf("   Notes: %s", plan.Notes)
+	t.Logf("   Instruction: %s", plan.Instruction)
 }
 
 // TestRealLLMComparisonOpenAIVsClaude 比较 OpenAI 和 Claude 的决策差异
@@ -402,24 +382,104 @@ func TestRealLLMComparisonOpenAIVsClaude(t *testing.T) {
 	t.Logf("📊 LLM 决策对比:")
 	t.Logf("")
 	t.Logf("OpenAI (GPT-4o-mini):")
-	t.Logf("  FlowMode: %s", openaiPlan.FlowMode)
-	t.Logf("  UserMindState: %v", openaiPlan.UserMindState)
-	t.Logf("  NextBeat: %s", openaiPlan.NextBeat)
 	t.Logf("  NextRole: %s", openaiPlan.NextRole)
-	t.Logf("  Notes: %s", openaiPlan.Notes)
+	t.Logf("  Instruction: %s", openaiPlan.Instruction)
 	t.Logf("")
 	t.Logf("Claude (3.5-Sonnet):")
-	t.Logf("  FlowMode: %s", claudePlan.FlowMode)
-	t.Logf("  UserMindState: %v", claudePlan.UserMindState)
-	t.Logf("  NextBeat: %s", claudePlan.NextBeat)
 	t.Logf("  NextRole: %s", claudePlan.NextRole)
-	t.Logf("  Notes: %s", claudePlan.Notes)
+	t.Logf("  Instruction: %s", claudePlan.Instruction)
 	t.Logf("")
 
 	// 验证两个决策都是有效的
-	if openaiPlan.NextBeat == "" || claudePlan.NextBeat == "" {
-		t.Error("❌ Both decisions should have valid next_beat")
+	if openaiPlan.Instruction == "" || claudePlan.Instruction == "" {
+		t.Error("❌ Both decisions should have valid instruction")
 	}
 
 	t.Logf("✅ Both LLMs produced valid decisions")
+}
+
+func extractNextBeat(instruction string) string {
+	for _, line := range strings.Split(instruction, "\n") {
+		if strings.HasPrefix(line, "Next Beat: ") {
+			return strings.TrimPrefix(line, "Next Beat: ")
+		}
+	}
+	return ""
+}
+
+// TestRealLLMTalOpenAI 测试真实 Claude LLM 的导演决策
+// 需要设置环境变量: TALOPENAI_API_KEY
+// 运行: go test -v -run TestRealLLMTalOpenAI ./server/internal/director/... -tags=integration
+func TestRealLLMTalOpenAI(t *testing.T) {
+	// 跳过条件
+	apiKey := os.Getenv("TALOPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("⏭️  Skipping TALOpenAI LLM test: TALOPENAI_API_KEY not set")
+	}
+
+	// 创建配置
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Provider: "talopenai",
+			TalOpenAI: config.LLMProviderConfig{
+				APIKey:      apiKey,
+				APIURL:      "http://ai-service.tal.com",
+				Model:       "claude-opus-4.5",
+				Temperature: 0.7,
+				MaxTokens:   2000,
+			},
+		},
+		Director: config.DirectorConfig{
+			EnableLLM:              true,
+			AvailableRoles:         []string{"host", "economist", "skeptic"},
+			AvailableBeats:         []string{"reveal", "check", "deepen", "twist", "continue", "lens_shift", "feynman", "montage", "minigame", "exit_ticket"},
+			DefaultTalkBurstLimit:  20,
+			HighLoadTalkBurstLimit: 15,
+			OutputClockThreshold:   90,
+		},
+	}
+
+	// 创建真实 LLM 客户端
+	llmClient, err := llm.NewClient(cfg)
+	if err != nil {
+		t.Fatalf("❌ Failed to create Claude client: %v", err)
+	}
+
+	// 创建导演引擎
+	director := NewDirectorEngine(cfg, llmClient)
+
+	// 测试场景
+	state := &model.SessionState{
+		SessionID:         "real-claude-test",
+		EntryID:           "econ_opportunity_cost",
+		AvailableRoles:    []string{"host", "economist", "skeptic"},
+		MasteryEstimate:   0.45,
+		OutputClockSec:    50,
+		TensionLevel:      5,
+		CognitiveLoad:     6,
+		MisconceptionTags: []string{"M1_cost_equals_money_spent"},
+		Signals: model.SignalsSnapshot{
+			LastUserChars:     40,
+			LastUserLatencyMS: 2500,
+		},
+		Turns: []model.Turn{
+			{Role: "user", Text: "机会成本到底是什么？", TS: time.Now()},
+		},
+	}
+
+	userInput := "还是不太明白"
+
+	plan := director.Decide(state, userInput)
+
+	// 验证关键字段
+	if plan.NextRole == "" {
+		t.Error("❌ next_role should not be empty")
+	}
+	if plan.Instruction == "" {
+		t.Error("❌ instruction should not be empty")
+	}
+
+	t.Logf("✅ Claude LLM Decision:")
+	t.Logf("   NextRole: %s", plan.NextRole)
+	t.Logf("   Instruction: %s", plan.Instruction)
 }

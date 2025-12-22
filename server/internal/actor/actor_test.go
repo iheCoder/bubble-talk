@@ -14,15 +14,9 @@ func TestNewActorEngine(t *testing.T) {
 	if len(engine.rolePrompts) == 0 {
 		t.Error("Expected role prompts")
 	}
-	if len(engine.beatPrompts) == 0 {
-		t.Error("Expected beat prompts")
-	}
-	t.Logf("✓ 加载了 %d 个角色, %d 个Beat", len(engine.rolePrompts), len(engine.beatPrompts))
+	t.Logf("✓ 加载了 %d 个角色", len(engine.rolePrompts))
 	for role := range engine.rolePrompts {
 		t.Logf("  - 角色: %s", role)
-	}
-	for beat := range engine.beatPrompts {
-		t.Logf("  - Beat: %s", beat)
 	}
 }
 
@@ -36,14 +30,12 @@ func TestBuildPrompt(t *testing.T) {
 		SessionID: "test-1",
 		TurnID:    "turn-1",
 		Plan: model.DirectorPlan{
-			UserMindState:     []string{"confused", "fog"},
-			Intent:            "clarify",
-			NextBeat:          "reveal",
-			NextRole:          "host",
-			OutputAction:      "explain_with_metaphor",
-			TalkBurstLimitSec: 20,
-			TensionGoal:       "decrease",
-			LoadGoal:          "decrease",
+			NextRole: "host",
+			Instruction: "User Mind State: confused, fog\n" +
+				"Next Beat: reveal\n" +
+				"Output Action: explain_with_metaphor\n" +
+				"Tension Goal: decrease\n" +
+				"Load Goal: decrease\n",
 		},
 		MainObjective: "理解机会成本",
 		ConceptName:   "机会成本",
@@ -59,8 +51,8 @@ func TestBuildPrompt(t *testing.T) {
 	// 验证必要部分
 	requiredSections := []string{
 		"[Role Definition]",
-		"[Current Situation]",
-		"[Strategy & Task]",
+		"[Context]",
+		"[Director Instructions]",
 		"[Constraints]",
 	}
 	for _, section := range requiredSections {
@@ -84,9 +76,8 @@ func TestValidate(t *testing.T) {
 		req := ActorRequest{
 			SessionID: "test-2",
 			Plan: model.DirectorPlan{
-				NextRole:          "host",
-				NextBeat:          "reveal",
-				TalkBurstLimitSec: 20,
+				NextRole:    "host",
+				Instruction: "Next Beat: reveal\nTalk Burst Limit: 20 seconds\n",
 			},
 			MainObjective: "测试",
 		}
@@ -119,7 +110,7 @@ func TestBuildFallbackPrompt(t *testing.T) {
 
 	req := ActorRequest{
 		SessionID:     "test-3",
-		Plan:          model.DirectorPlan{TalkBurstLimitSec: 20},
+		Plan:          model.DirectorPlan{NextRole: "host", Instruction: "Next Beat: check\n"},
 		MainObjective: "理解机会成本",
 	}
 
@@ -149,16 +140,14 @@ func TestFullWorkflow(t *testing.T) {
 		SessionID: "integration-1",
 		TurnID:    "turn-1",
 		Plan: model.DirectorPlan{
-			UserMindState:     []string{"confused", "fog"},
-			Intent:            "clarify",
-			NextBeat:          "reveal",
-			NextRole:          "host",
-			OutputAction:      "explain_with_metaphor",
-			TalkBurstLimitSec: 20,
-			TensionGoal:       "decrease",
-			LoadGoal:          "decrease",
-			StackAction:       "maintain",
-			Notes:             "用户对机会成本感到困惑",
+			NextRole: "host",
+			Instruction: "User Mind State: confused, fog\n" +
+				"Intent: clarify\n" +
+				"Next Beat: reveal\n" +
+				"Output Action: explain_with_metaphor\n" +
+				"Tension Goal: decrease\n" +
+				"Load Goal: decrease\n" +
+				"Notes: 用户对机会成本感到困惑\n",
 		},
 		EntryID:       "entry-econ-001",
 		Domain:        "economics",
@@ -180,7 +169,7 @@ func TestFullWorkflow(t *testing.T) {
 	}
 
 	// 3. 验证内容
-	requiredContent := []string{"Host", "confused", "reveal", "20 seconds", "metaphor"}
+	requiredContent := []string{"confused", "reveal", "metaphor"}
 	for _, content := range requiredContent {
 		if !strings.Contains(strings.ToLower(prompt.Instructions), strings.ToLower(content)) {
 			t.Errorf("Missing content: %s", content)

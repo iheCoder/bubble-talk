@@ -32,6 +32,22 @@ type BeatCard struct {
 	NextSuggest        []string `json:"next_suggest"`
 }
 
+// decisionPlan 是导演内部使用的完整决策载体。
+// 对外只暴露精简的 DirectorPlan（角色 + 指令 + Debug）。
+type decisionPlan struct {
+	FlowMode          string
+	UserMindState     []string
+	Intent            string
+	NextBeat          string
+	NextRole          string
+	OutputAction      string
+	TalkBurstLimitSec int
+	TensionGoal       string
+	LoadGoal          string
+	Notes             string
+	Debug             *model.DirectorDebug
+}
+
 // NewDirectorEngine 创建导演引擎
 func NewDirectorEngine(cfg *config.Config, llmClient llm.Client) *DirectorEngine {
 	roles := cfg.Director.AvailableRoles
@@ -61,33 +77,97 @@ func NewDirectorEngine(cfg *config.Config, llmClient llm.Client) *DirectorEngine
 func (d *DirectorEngine) Decide(state *model.SessionState, userInput string) model.DirectorPlan {
 	ctx := context.Background()
 
-	var plan model.DirectorPlan
+	var decision decisionPlan
 
 	// 如果启用 LLM，让 LLM 完全负责推断（包括 FlowMode）
 	if d.config.EnableLLM && d.llmClient != nil {
-		llmPlan, err := d.decideLLM(ctx, state, userInput)
+		llmDecision, err := d.decideLLM(ctx, state, userInput)
 		if err != nil {
 			log.Printf("⚠️ LLM decision failed, falling back to rules: %v", err)
 			// 降级到规则引擎
 			flowMode := d.inferFlowMode(state, userInput)
 			userMindState := d.inferUserMindState(state, userInput)
 			beatCandidates := d.generateBeatCandidates(state, flowMode, userMindState)
-			plan = d.decideWithRules(state, userInput, flowMode, userMindState, beatCandidates)
+			decision = d.decideWithRules(state, flowMode, userMindState, beatCandidates)
 		} else {
-			plan = llmPlan
+			decision = llmDecision
 		}
 	} else {
 		// 使用规则引擎：先推断 FlowMode 和 UserMindState，再生成候选
 		flowMode := d.inferFlowMode(state, userInput)
 		userMindState := d.inferUserMindState(state, userInput)
 		beatCandidates := d.generateBeatCandidates(state, flowMode, userMindState)
-		plan = d.decideWithRules(state, userInput, flowMode, userMindState, beatCandidates)
+		decision = d.decideWithRules(state, flowMode, userMindState, beatCandidates)
 	}
 
 	// Layer A: 应用硬约束（最后验证）
-	plan = d.applyGuardrails(plan, state)
+	decision = d.applyGuardrails(decision, state)
 
-	return plan
+	return model.DirectorPlan{
+		NextRole:    decision.NextRole,
+		Instruction: d.buildInstruction(state, userInput, decision),
+		Debug:       decision.Debug,
+	}
+}
+
+// buildInstruction 将内部决策渲染为可执行的导演指令文本。
+// TODO 是不是考虑更加完善的提示词，以方便actor更好地执行呢？比如TensionGoal说提升和降低是不是对于角色过于抽象呢？
+func (d *DirectorEngine) buildInstruction(
+	state *model.SessionState,
+	userInput string,
+	decision decisionPlan,
+) string {
+	var sb strings.Builder
+
+	sb.WriteString("User Mind State: ")
+	if len(decision.UserMindState) > 0 {
+		sb.WriteString(strings.Join(decision.UserMindState, ", "))
+	} else {
+		sb.WriteString("normal")
+	}
+	sb.WriteString("\n")
+
+	if decision.FlowMode != "" {
+		sb.WriteString(fmt.Sprintf("Flow Mode: %s\n", decision.FlowMode))
+	}
+	if decision.Intent != "" {
+		sb.WriteString(fmt.Sprintf("Intent: %s\n", decision.Intent))
+	}
+	if userInput != "" {
+		sb.WriteString(fmt.Sprintf("Last User Input: \"%s\"\n", userInput))
+	}
+	if state != nil && state.MainObjective != "" {
+		sb.WriteString(fmt.Sprintf("Main Objective: %s\n", state.MainObjective))
+	}
+
+	if decision.NextBeat != "" {
+		sb.WriteString(fmt.Sprintf("Next Beat: %s\n", decision.NextBeat))
+		if card, ok := d.beatLibrary[decision.NextBeat]; ok {
+			if card.Goal != "" {
+				sb.WriteString(fmt.Sprintf("Beat Goal: %s\n", card.Goal))
+			}
+			if card.UserMustDoType != "" {
+				sb.WriteString(fmt.Sprintf("User Must Do: %s\n", card.UserMustDoType))
+			}
+		}
+	}
+	if decision.OutputAction != "" {
+		sb.WriteString(fmt.Sprintf("Output Action: %s\n", decision.OutputAction))
+	}
+	if decision.TensionGoal != "" {
+		sb.WriteString(fmt.Sprintf("Tension Goal: %s\n", decision.TensionGoal))
+	}
+	if decision.LoadGoal != "" {
+		sb.WriteString(fmt.Sprintf("Load Goal: %s\n", decision.LoadGoal))
+	}
+	if decision.TalkBurstLimitSec > 0 {
+		sb.WriteString(fmt.Sprintf("Talk Burst Limit: %d seconds\n", decision.TalkBurstLimitSec))
+	}
+	if decision.Notes != "" {
+		sb.WriteString(fmt.Sprintf("Notes: %s\n", decision.Notes))
+	}
+
+	return sb.String()
 }
 
 // inferFlowMode 推断流动模式（FLOW 或 RESCUE）
@@ -232,7 +312,7 @@ func (d *DirectorEngine) decideLLM(
 	ctx context.Context,
 	state *model.SessionState,
 	userInput string,
-) (model.DirectorPlan, error) {
+) (decisionPlan, error) {
 	// 构建提示词
 	systemPrompt := d.buildSystemPrompt()
 	userPrompt := d.buildUserPromptForLLM(state, userInput)
@@ -316,7 +396,7 @@ func (d *DirectorEngine) decideLLM(
 	// 调用 LLM
 	response, err := d.llmClient.Complete(ctx, messages, schema)
 	if err != nil {
-		return model.DirectorPlan{}, fmt.Errorf("LLM complete: %w", err)
+		return decisionPlan{}, fmt.Errorf("LLM complete: %w", err)
 	}
 
 	// 解析响应
@@ -334,11 +414,11 @@ func (d *DirectorEngine) decideLLM(
 	}
 
 	if err := json.Unmarshal([]byte(response), &planData); err != nil {
-		return model.DirectorPlan{}, fmt.Errorf("unmarshal LLM response: %w", err)
+		return decisionPlan{}, fmt.Errorf("unmarshal LLM response: %w", err)
 	}
 
-	// 构建 DirectorPlan
-	plan := model.DirectorPlan{
+	// 构建内部决策
+	plan := decisionPlan{
 		FlowMode:          planData.FlowMode,
 		UserMindState:     planData.UserMindState,
 		Intent:            planData.Intent,
@@ -348,7 +428,6 @@ func (d *DirectorEngine) decideLLM(
 		TalkBurstLimitSec: planData.TalkBurstLimitSec,
 		TensionGoal:       planData.TensionGoal,
 		LoadGoal:          planData.LoadGoal,
-		StackAction:       "maintain",
 		Notes:             planData.Notes,
 	}
 
@@ -358,11 +437,10 @@ func (d *DirectorEngine) decideLLM(
 // decideWithRules 使用规则引擎进行决策
 func (d *DirectorEngine) decideWithRules(
 	state *model.SessionState,
-	_ string,
 	flowMode string,
 	userMindState []string,
 	beatCandidates []string,
-) model.DirectorPlan {
+) decisionPlan {
 	// 从候选中选择第一个（简单策略）
 	nextBeat := beatCandidates[0]
 
@@ -372,7 +450,7 @@ func (d *DirectorEngine) decideWithRules(
 	// 确定输出动作
 	outputAction := d.determineOutputAction(nextBeat)
 
-	return model.DirectorPlan{
+	return decisionPlan{
 		FlowMode:          flowMode,
 		UserMindState:     userMindState,
 		Intent:            "clarify",
@@ -382,7 +460,6 @@ func (d *DirectorEngine) decideWithRules(
 		TalkBurstLimitSec: d.determineTalkBurstLimit(state),
 		TensionGoal:       d.determineTensionGoal(state),
 		LoadGoal:          d.determineLoadGoal(state),
-		StackAction:       "maintain",
 		Notes:             "规则引擎选择",
 		Debug: &model.DirectorDebug{
 			BeatCandidates:   beatCandidates,
@@ -392,7 +469,7 @@ func (d *DirectorEngine) decideWithRules(
 }
 
 // applyGuardrails 应用硬约束
-func (d *DirectorEngine) applyGuardrails(plan model.DirectorPlan, state *model.SessionState) model.DirectorPlan {
+func (d *DirectorEngine) applyGuardrails(plan decisionPlan, state *model.SessionState) decisionPlan {
 	// 验证 next_beat 在可用列表中
 	if !contains(d.availableBeats, plan.NextBeat) {
 		log.Printf("⚠️ Invalid beat '%s', falling back to 'check'", plan.NextBeat)
@@ -485,7 +562,7 @@ func (d *DirectorEngine) buildSystemPrompt() string {
 2. **推断 UserMindState**：识别用户的心理状态（可多选）
 3. **选择最合适的拍点（Beat）**：基于状态和硬约束
 4. **选择最合适的角色（Role）**：在泡泡固定角色集合中选择
-5. **明确用户输出要求**：user_must_do 必须具体可执行
+5. **明确用户输出要求**：输出动作必须具体可执行
 
 关键原则：
 - 你有完全的推断自主权，不依赖预设的状态
@@ -497,7 +574,6 @@ func (d *DirectorEngine) buildSystemPrompt() string {
 输出格式要求：
 - 严格按照 JSON Schema 返回
 - 所有必填字段必须填写
-- debug 字段用于工程调试，必须写清推理过程
 - flow_mode 和 user_mind_state 是你自主推断的结果，不是输入
 
 记住：你是导演，你决定一切。数据只是参考，最终决策权在你。`

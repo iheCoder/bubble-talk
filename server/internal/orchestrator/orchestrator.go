@@ -191,8 +191,7 @@ func (o *Orchestrator) HandleUserUtterance(ctx context.Context, sessionID string
 	// 3. 调用Director生成计划
 	plan := o.directorEngine.Decide(state, text)
 
-	o.logger.Printf("[Orchestrator] Director plan: role=%s beat=%s action=%s",
-		plan.NextRole, plan.NextBeat, plan.OutputAction)
+	o.logger.Printf("[Orchestrator] Director plan: role=%s", plan.NextRole)
 
 	// 4. 记录Director计划到Timeline
 	if err := o.appendDirectorPlan(ctx, sessionID, plan); err != nil {
@@ -208,9 +207,7 @@ func (o *Orchestrator) HandleUserUtterance(ctx context.Context, sessionID string
 	// 关键：在 metadata 中传递 role，MultiVoiceGateway 需要这个字段
 	if gw != nil {
 		metadata := map[string]interface{}{
-			"role":   plan.NextRole, // 关键！指定哪个角色说话
-			"beat":   plan.NextBeat,
-			"action": plan.OutputAction,
+			"role": plan.NextRole, // 关键！指定哪个角色说话
 		}
 
 		// 类型断言，支持两种 Gateway
@@ -355,9 +352,7 @@ func (o *Orchestrator) HandleWorldEntered(ctx context.Context, sessionID string,
 	// 通过 Gateway 发送指令
 	if gw != nil {
 		metadata := map[string]interface{}{
-			"role":   plan.NextRole, // 关键！指定哪个角色说话
-			"beat":   plan.NextBeat,
-			"action": plan.OutputAction,
+			"role": plan.NextRole, // 关键！指定哪个角色说话
 		}
 
 		// 类型断言，支持两种 Gateway
@@ -453,18 +448,10 @@ func (o *Orchestrator) OnEvent(ctx context.Context, sessionID string, evt model.
 	}
 
 	// 第一阶段：DirectorPlan 与 Actor 输出先用 stub，确保编排流水线可验收。
-	// 后续接入 ActorEngine 时，这里应返回 ActorReply，而不是简单的 Assistant 文本。
+	// TODO 后续接入 ActorEngine 时，这里应返回 ActorReply，而不是简单的 Assistant 文本。
 	plan := model.DirectorPlan{
-		UserMindState:     []string{"Partial"},
-		Intent:            "Clarify",
-		NextBeat:          "Check",
-		NextRole:          "Coach",
-		OutputAction:      "Recap",
-		TalkBurstLimitSec: 20,
-		TensionGoal:       "keep",
-		LoadGoal:          "keep",
-		StackAction:       "keep",
-		Notes:             "stub plan for stage-1",
+		NextRole:    "Coach",
+		Instruction: "User Mind State: Partial\nNext Beat: Check\nOutput Action: Recap\n",
 	}
 
 	planEvent := model.Event{

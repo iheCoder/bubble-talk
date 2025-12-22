@@ -3,6 +3,7 @@ package director
 import (
 	"bubble-talk/server/internal/config"
 	"bubble-talk/server/internal/model"
+	"strings"
 	"testing"
 	"time"
 )
@@ -339,30 +340,25 @@ func TestDecideWithRules(t *testing.T) {
 		},
 	}
 
-	userInput := "我理解了"
 	flowMode := "FLOW"
 	userMindState := []string{"Partial"}
 	beatCandidates := []string{"continue", "check", "deepen"}
 
-	plan := director.decideWithRules(state, userInput, flowMode, userMindState, beatCandidates)
+	plan := director.decideWithRules(state, flowMode, userMindState, beatCandidates)
 
 	// 验证计划结构
 	if plan.FlowMode != flowMode {
 		t.Errorf("expected flow_mode %s, got %s", flowMode, plan.FlowMode)
 	}
-
 	if plan.NextBeat == "" {
 		t.Error("next_beat should not be empty")
 	}
-
 	if plan.NextRole == "" {
 		t.Error("next_role should not be empty")
 	}
-
 	if plan.TalkBurstLimitSec <= 0 {
 		t.Error("talk_burst_limit_sec should be positive")
 	}
-
 	if plan.Debug == nil {
 		t.Error("debug info should not be nil")
 	}
@@ -388,13 +384,13 @@ func TestApplyGuardrails(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		plan         model.DirectorPlan
+		plan         decisionPlan
 		expectedBeat string
 		expectedRole string
 	}{
 		{
 			name: "无效拍点应该回退到check",
-			plan: model.DirectorPlan{
+			plan: decisionPlan{
 				NextBeat: "invalid_beat",
 				NextRole: "host",
 			},
@@ -403,7 +399,7 @@ func TestApplyGuardrails(t *testing.T) {
 		},
 		{
 			name: "无效角色应该回退到第一个可用角色",
-			plan: model.DirectorPlan{
+			plan: decisionPlan{
 				NextBeat: "check",
 				NextRole: "invalid_role",
 			},
@@ -412,7 +408,7 @@ func TestApplyGuardrails(t *testing.T) {
 		},
 		{
 			name: "有效计划应该保持不变",
-			plan: model.DirectorPlan{
+			plan: decisionPlan{
 				NextBeat: "reveal",
 				NextRole: "economist",
 			},
@@ -597,25 +593,19 @@ func TestEndToEndDecision(t *testing.T) {
 	plan := director.Decide(state, userInput)
 
 	// 验证决策结果
-	if plan.FlowMode == "" {
-		t.Error("flow_mode should not be empty")
-	}
-
-	if len(plan.UserMindState) == 0 {
-		t.Error("user_mind_state should not be empty")
-	}
-
-	if plan.NextBeat == "" {
-		t.Error("next_beat should not be empty")
-	}
-
 	if plan.NextRole == "" {
 		t.Error("next_role should not be empty")
 	}
+	if plan.Instruction == "" {
+		t.Error("instruction should not be empty")
+	}
+	if plan.Debug == nil {
+		t.Error("debug info should not be nil")
+	}
 
 	// 由于有误解标签，应该是 RESCUE 模式
-	if plan.FlowMode != "RESCUE" {
-		t.Errorf("expected RESCUE mode for misconception, got %s", plan.FlowMode)
+	if !strings.Contains(plan.Instruction, "Flow Mode: RESCUE") {
+		t.Errorf("expected RESCUE mode for misconception, got instruction: %s", plan.Instruction)
 	}
 
 	// 验证角色在可用列表中
@@ -624,16 +614,20 @@ func TestEndToEndDecision(t *testing.T) {
 	}
 
 	// 验证拍点在可用列表中
-	if !contains(cfg.Director.AvailableBeats, plan.NextBeat) {
-		t.Errorf("beat %s not in available beats", plan.NextBeat)
+	foundBeat := false
+	for _, beat := range cfg.Director.AvailableBeats {
+		if strings.Contains(plan.Instruction, "Next Beat: "+beat) {
+			foundBeat = true
+			break
+		}
+	}
+	if !foundBeat {
+		t.Errorf("instruction should include an available beat, got: %s", plan.Instruction)
 	}
 
 	t.Logf("✅ Decision successful (Rule-based):")
-	t.Logf("   FlowMode: %s", plan.FlowMode)
-	t.Logf("   UserMindState: %v", plan.UserMindState)
-	t.Logf("   NextBeat: %s", plan.NextBeat)
 	t.Logf("   NextRole: %s", plan.NextRole)
-	t.Logf("   Notes: %s", plan.Notes)
+	t.Logf("   Instruction: %s", plan.Instruction)
 }
 
 // TestLLMDecision 测试 LLM 驱动的决策
@@ -677,28 +671,17 @@ func TestLLMDecision(t *testing.T) {
 	}
 
 	// 验证决策结果结构完整
-	if plan.FlowMode == "" {
-		t.Error("flow_mode should not be empty")
-	}
-
-	if len(plan.UserMindState) == 0 {
-		t.Error("user_mind_state should not be empty")
-	}
-
-	if plan.NextBeat == "" {
-		t.Error("next_beat should not be empty")
-	}
-
 	if plan.NextRole == "" {
 		t.Error("next_role should not be empty")
+	}
+	if plan.Instruction == "" {
+		t.Error("instruction should not be empty")
 	}
 
 	t.Logf("✅ LLM Decision successful:")
 	t.Logf("   LLM call count: %d", mockLLM.CallCount)
-	t.Logf("   FlowMode: %s", plan.FlowMode)
-	t.Logf("   UserMindState: %v", plan.UserMindState)
-	t.Logf("   NextBeat: %s", plan.NextBeat)
 	t.Logf("   NextRole: %s", plan.NextRole)
+	t.Logf("   Instruction: %s", plan.Instruction)
 }
 
 // TestLLMDecisionWithCustomResponse 测试 LLM 返回自定义决策
@@ -759,34 +742,22 @@ func TestLLMDecisionWithCustomResponse(t *testing.T) {
 	plan := director.Decide(state, "没问题")
 
 	// 验证 LLM 返回的自定义决策被正确使用
-	if plan.NextBeat != "twist" {
-		t.Errorf("expected beat 'twist', got '%s'", plan.NextBeat)
-	}
-
 	if plan.NextRole != "skeptic" {
 		t.Errorf("expected role 'skeptic', got '%s'", plan.NextRole)
 	}
-
-	if plan.FlowMode != "RESCUE" {
-		t.Errorf("expected RESCUE mode, got '%s'", plan.FlowMode)
+	if !strings.Contains(plan.Instruction, "Next Beat: twist") {
+		t.Errorf("expected instruction to include twist beat, got: %s", plan.Instruction)
 	}
-
-	// 验证用户心理状态
-	found := false
-	for _, state := range plan.UserMindState {
-		if state == "Illusion" {
-			found = true
-			break
-		}
+	if !strings.Contains(plan.Instruction, "Flow Mode: RESCUE") {
+		t.Errorf("expected RESCUE mode, got instruction: %s", plan.Instruction)
 	}
-	if !found {
-		t.Errorf("expected Illusion in user_mind_state, got %v", plan.UserMindState)
+	if !strings.Contains(plan.Instruction, "User Mind State: Illusion") {
+		t.Errorf("expected Illusion in instruction, got: %s", plan.Instruction)
 	}
 
 	t.Logf("✅ Custom LLM Response handled correctly:")
-	t.Logf("   NextBeat: %s (expected: twist)", plan.NextBeat)
 	t.Logf("   NextRole: %s (expected: skeptic)", plan.NextRole)
-	t.Logf("   FlowMode: %s (expected: RESCUE)", plan.FlowMode)
+	t.Logf("   Instruction: %s", plan.Instruction)
 }
 
 // TestLLMDecisionFailoverToRules 测试 LLM 失败时降级到规则引擎
@@ -822,23 +793,21 @@ func TestLLMDecisionFailoverToRules(t *testing.T) {
 	plan := director.Decide(state, "好的")
 
 	// 验证即使 LLM 失败，决策仍然有效
-	if plan.NextBeat == "" {
+	if plan.Instruction == "" {
 		t.Error("decision should be made even when LLM fails (fallback to rules)")
 	}
-
 	if plan.NextRole == "" {
 		t.Error("role should be selected even when LLM fails")
 	}
 
 	// 验证来自规则引擎的备注
-	if plan.Notes != "规则引擎选择" {
-		t.Logf("note: expected fallback to rules, got: %s", plan.Notes)
+	if !strings.Contains(plan.Instruction, "Notes: 规则引擎选择") {
+		t.Logf("note: expected fallback to rules, got instruction: %s", plan.Instruction)
 	}
 
 	t.Logf("✅ LLM failure fallback works correctly:")
-	t.Logf("   NextBeat: %s (from rules)", plan.NextBeat)
 	t.Logf("   NextRole: %s (from rules)", plan.NextRole)
-	t.Logf("   Notes: %s", plan.Notes)
+	t.Logf("   Instruction: %s", plan.Instruction)
 }
 
 // TestLLMDecisionCallCount 测试 LLM 调用次数
@@ -933,11 +902,11 @@ func TestLLMDecisionWithTimeoutBeat(t *testing.T) {
 	plan := director.Decide(state, "结束")
 
 	// 验证超时时选择了输出型 Beat
-	if plan.NextBeat != "exit_ticket" {
-		t.Errorf("expected exit_ticket for timeout, got %s", plan.NextBeat)
+	if !strings.Contains(plan.Instruction, "Next Beat: exit_ticket") {
+		t.Errorf("expected exit_ticket for timeout, got instruction: %s", plan.Instruction)
 	}
 
 	t.Logf("✅ Output clock timeout handled correctly:")
 	t.Logf("   Clock: %d sec (threshold: 90)", state.OutputClockSec)
-	t.Logf("   Selected beat: %s", plan.NextBeat)
+	t.Logf("   Instruction: %s", plan.Instruction)
 }
