@@ -42,6 +42,9 @@ type MultiVoiceGateway struct {
 	// 工具注册表（支持function calling）：所有角色共享的工具集
 	toolRegistry *tool.ToolRegistry
 
+	// 响应元数据注册表（解决音频与元数据关联问题）
+	metadataRegistry *ResponseMetadataRegistry
+
 	// 状态管理
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -79,6 +82,7 @@ type MultiVoiceGateway struct {
 func NewMultiVoiceGateway(sessionID string, clientConn *websocket.Conn, config GatewayConfig) *MultiVoiceGateway {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	logger := log.Default()
 	g := &MultiVoiceGateway{
 		sessionID:  sessionID,
 		clientConn: clientConn,
@@ -86,9 +90,11 @@ func NewMultiVoiceGateway(sessionID string, clientConn *websocket.Conn, config G
 		cancel:     cancel,
 		closeChan:  make(chan struct{}),
 		config:     config,
-		logger:     log.Default(),
+		logger:     logger,
 		// 默认使用 transcription.completed 作为唯一 ASR 事件源
 		useTranscriptionCompleted: true,
+		// 初始化元数据注册表
+		metadataRegistry: NewResponseMetadataRegistry(logger),
 	}
 
 	return g
@@ -349,15 +355,24 @@ func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 	// ASR 相关事件
 	case "input_audio_buffer.speech_started":
 		// VAD 检测到用户开始说话
-		// 此时可以做一些 UI 交互（如显示"正在听..."）
-		g.logger.Printf("[MultiVoiceGateway] User started speaking")
-		// 注意：我们通常依赖客户端发送的 barge_in 事件来打断 TTS，
-		// 因为客户端的 VAD 通常比服务端的更及时（没有网络延迟）。
+		// 修复方案：服务端兜底的插话检测
+		g.logger.Printf("[MultiVoiceGateway] 🎤 User started speaking (server-side VAD)")
+
+		// 服务端兜底：如果有角色正在说话，立即取消
+		// 这是对客户端 barge_in 的补充，防止客户端延迟或未发送 barge_in
+		if err := g.voicePool.CancelCurrentResponse(); err != nil {
+			g.logger.Printf("[MultiVoiceGateway] ⚠️  Server-side barge-in cancel failed: %v", err)
+		} else {
+			g.logger.Printf("[MultiVoiceGateway] ✅ Server-side barge-in: cancelled current response")
+		}
+
+		return nil
 
 	case "input_audio_buffer.speech_stopped":
 		// VAD 检测到用户停止说话
 		// 注意不等同于用户真的说完了，可能只是短暂停顿、VAD 静音阈值触发
 		g.logger.Printf("[MultiVoiceGateway] User stopped speaking")
+		return nil
 
 	case "conversation.item.input_audio_transcription.completed":
 		// ASR 已完成，服务器生成了"最终可用的用户语音文本"，用户"说了什么"在这一刻才确定
@@ -577,14 +592,24 @@ func (g *MultiVoiceGateway) handleRoleConnEvent(role string, data []byte) error 
 
 	case "response.created":
 		// 响应创建 - 意味着角色准备开始说话
-		// 我们记录 active response ID，以便在插话时能取消它
+		// 1. 记录 active response ID，以便在插话时能取消它
 		responseID, _ := event["response"].(map[string]interface{})["id"].(string)
 		conn, _ := g.voicePool.GetRoleConn(g.ctx, role)
 		if conn != nil {
 			conn.SetActiveResponse(responseID)
+
+			// 2. 注册元数据：将 responseID 与 role、metadata 关联
+			if metadata := conn.GetPendingMetadata(); metadata != nil {
+				g.metadataRegistry.Register(responseID, role, metadata)
+				g.logger.Printf("[MultiVoiceGateway] ✅ Registered metadata for responseID=%s role=%s",
+					responseID, role)
+			} else {
+				g.logger.Printf("[MultiVoiceGateway] ⚠️  No pending metadata for responseID=%s role=%s",
+					responseID, role)
+			}
 		}
 
-		// 发送 tts_started 给前端，包含角色信息，让前端显示"正在说话"的动画
+		// 3. 发送 tts_started 给前端，包含角色信息，让前端显示"正在说话"的动画
 		g.sendTTSStartedToClient(role)
 
 	case "response.audio.delta":
@@ -604,6 +629,35 @@ func (g *MultiVoiceGateway) handleRoleConnEvent(role string, data []byte) error 
 		g.sendTTSCompletedToClient(role)
 		// 2. 提取完整文本，进行文本镜像（同步给其他角色）和业务处理
 		return g.handleResponseDone(role, event)
+
+	case "response.cancelled":
+		// 响应被取消 - 插话中断成功
+		// 修复方案：处理取消后的状态收敛
+		g.logger.Printf("[MultiVoiceGateway] ✅ Role %s response cancelled (barge-in successful)", role)
+
+		// 提取 responseID
+		response, _ := event["response"].(map[string]interface{})
+		responseID, _ := response["id"].(string)
+
+		// 1. 清除活跃响应
+		conn, _ := g.voicePool.GetRoleConn(g.ctx, role)
+		if conn != nil {
+			conn.ClearActiveResponse()
+		}
+
+		// 2. 清除正在说话的角色
+		g.voicePool.ClearSpeakingRole()
+
+		// 3. 注销元数据
+		if responseID != "" {
+			g.metadataRegistry.Unregister(responseID)
+			g.logger.Printf("[MultiVoiceGateway] ✅ Unregistered metadata for cancelled responseID=%s", responseID)
+		}
+
+		// 4. 通知前端 TTS 已中断
+		g.sendTTSCompletedToClient(role)
+
+		return nil
 	}
 
 	return nil
@@ -720,6 +774,10 @@ func (g *MultiVoiceGateway) handleAudioDelta(role string, event map[string]inter
 func (g *MultiVoiceGateway) handleResponseDone(role string, event map[string]interface{}) error {
 	g.logger.Printf("[MultiVoiceGateway] Role %s response done", role)
 
+	// 提取 responseID
+	response, _ := event["response"].(map[string]interface{})
+	responseID, _ := response["id"].(string)
+
 	// 清除活跃响应
 	conn, _ := g.voicePool.GetRoleConn(g.ctx, role)
 	if conn != nil {
@@ -729,8 +787,13 @@ func (g *MultiVoiceGateway) handleResponseDone(role string, event map[string]int
 	// 清除正在说话的角色
 	g.voicePool.ClearSpeakingRole()
 
+	// 注销元数据
+	if responseID != "" {
+		g.metadataRegistry.Unregister(responseID)
+		g.logger.Printf("[MultiVoiceGateway] ✅ Unregistered metadata for responseID=%s", responseID)
+	}
+
 	// 提取最终文本
-	response, _ := event["response"].(map[string]interface{})
 	output, _ := response["output"].([]interface{})
 
 	var finalText string
@@ -781,16 +844,23 @@ func (g *MultiVoiceGateway) handleResponseDone(role string, event map[string]int
 	return nil
 }
 
+// snapshotActiveMetadata 获取角色的最新响应元数据
 func (g *MultiVoiceGateway) snapshotActiveMetadata(role string) map[string]interface{} {
-	g.activeMetadataLock.RLock()
-	metadata := make(map[string]interface{})
-	for k, v := range g.activeMetadata {
-		metadata[k] = v
+	// 从注册表获取该角色的最新元数据
+	if rm, ok := g.metadataRegistry.GetByRole(role); ok {
+		metadata := make(map[string]interface{})
+		for k, v := range rm.Metadata {
+			metadata[k] = v
+		}
+		// 确保包含 role
+		metadata["role"] = role
+		return metadata
 	}
-	g.activeMetadataLock.RUnlock()
 
-	metadata["role"] = role
-	return metadata
+	// 降级：如果注册表中没有，返回基本信息
+	return map[string]interface{}{
+		"role": role,
+	}
 }
 
 // SendInstructions 发送指令到指定角色的连接
@@ -904,6 +974,12 @@ func (g *MultiVoiceGateway) Close() error {
 			if err := g.eventQueue.Close(); err != nil {
 				g.logger.Printf("[MultiVoiceGateway] ⚠️  Error closing event queue: %v", err)
 			}
+		}
+
+		// 清理元数据注册表
+		if g.metadataRegistry != nil {
+			g.metadataRegistry.Clear()
+			g.logger.Printf("[MultiVoiceGateway] ✅ Metadata registry cleared")
 		}
 
 		// 关闭音色池

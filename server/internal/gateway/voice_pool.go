@@ -389,6 +389,9 @@ func (vp *VoicePool) CreateResponse(ctx context.Context, role string, instructio
 	vp.speakingRole = role
 	vp.speakingRoleMu.Unlock()
 
+	// 保存 metadata 到连接，以便 response.created 时可以使用
+	conn.SetPendingMetadata(metadata)
+
 	return conn.CreateResponse(instructions, metadata)
 }
 

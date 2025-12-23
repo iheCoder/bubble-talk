@@ -27,6 +27,10 @@ type RoleConn struct {
 	activeResponseID     string
 	activeResponseIDLock sync.RWMutex
 
+	// 待注册的元数据（在 CreateResponse 调用后，response.created 到达前）
+	pendingMetadata     map[string]interface{}
+	pendingMetadataLock sync.RWMutex
+
 	// 工具注册表
 	toolRegistry *tool.ToolRegistry
 
@@ -302,22 +306,28 @@ func (rc *RoleConn) CreateResponse(instructions string, metadata map[string]inte
 }
 
 // CancelResponse 取消当前活跃的响应（用于插话中断）
+// 改进方案：不依赖 responseID，取消所有进行中的响应
 func (rc *RoleConn) CancelResponse() error {
 	rc.activeResponseIDLock.RLock()
 	responseID := rc.activeResponseID
 	rc.activeResponseIDLock.RUnlock()
 
-	if responseID == "" {
-		rc.logger.Printf("[RoleConn:%s] No active response to cancel", rc.role)
-		return nil
+	// 方案1：如果有 responseID，尝试取消特定响应
+	if responseID != "" {
+		cancel := RealtimeResponseCancel{
+			Type:       "response.cancel",
+			ResponseID: responseID,
+		}
+		rc.logger.Printf("[RoleConn:%s] Canceling response: %s", rc.role, responseID)
+		return rc.SendMessage(cancel)
 	}
 
-	cancel := RealtimeResponseCancel{
-		Type:       "response.cancel",
-		ResponseID: responseID,
+	// 方案2（兜底）：没有 responseID 时，发送不带 ID 的取消（取消所有进行中的响应）
+	// 这是更激进但更可靠的策略
+	cancel := map[string]interface{}{
+		"type": "response.cancel",
 	}
-
-	rc.logger.Printf("[RoleConn:%s] Canceling response: %s", rc.role, responseID)
+	rc.logger.Printf("[RoleConn:%s] Canceling all active responses (no specific responseID)", rc.role)
 	return rc.SendMessage(cancel)
 }
 
@@ -333,6 +343,23 @@ func (rc *RoleConn) ClearActiveResponse() {
 	rc.activeResponseIDLock.Lock()
 	rc.activeResponseID = ""
 	rc.activeResponseIDLock.Unlock()
+}
+
+// SetPendingMetadata 设置待注册的元数据
+func (rc *RoleConn) SetPendingMetadata(metadata map[string]interface{}) {
+	rc.pendingMetadataLock.Lock()
+	rc.pendingMetadata = metadata
+	rc.pendingMetadataLock.Unlock()
+}
+
+// GetPendingMetadata 获取并清除待注册的元数据
+func (rc *RoleConn) GetPendingMetadata() map[string]interface{} {
+	rc.pendingMetadataLock.Lock()
+	defer rc.pendingMetadataLock.Unlock()
+
+	metadata := rc.pendingMetadata
+	rc.pendingMetadata = nil
+	return metadata
 }
 
 // SetToolRegistry 设置工具注册表
