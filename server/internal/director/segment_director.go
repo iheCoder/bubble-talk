@@ -644,7 +644,7 @@ func (d *SegmentDirector) decideSegmentWithLLM(
 			"properties": map[string]any{
 				"role_id": map[string]any{
 					"type":        "string",
-					"description": "选择哪个角色主导这一段戏",
+					"description": "选择哪个角色主导这一段戏。支持单角色（如\"host\"）或多角色顺序（如\"host,economist\"，逗号分隔，不要空格）",
 				},
 				"scene_direction": map[string]any{
 					"type":        "string",
@@ -710,10 +710,23 @@ func (d *SegmentDirector) applySegmentGuardrails(
 	plan *model.SegmentPlan,
 	state *model.SessionState,
 ) *model.SegmentPlan {
-	// 验证 role_id
-	if !contains(state.AvailableRoles, plan.RoleID) {
-		log.Printf("⚠️ Invalid role '%s', fallback to first available", plan.RoleID)
+	// 验证 role_id (支持多角色，如 "host,economist")
+	roles := strings.Split(plan.RoleID, ",")
+	validRoles := make([]string, 0, len(roles))
+	for _, role := range roles {
+		role = strings.TrimSpace(role)
+		if contains(state.AvailableRoles, role) {
+			validRoles = append(validRoles, role)
+		} else {
+			log.Printf("⚠️ Invalid role '%s' in sequence '%s', skipping", role, plan.RoleID)
+		}
+	}
+
+	if len(validRoles) == 0 {
+		log.Printf("⚠️ No valid roles found in '%s', fallback to first available", plan.RoleID)
 		plan.RoleID = state.AvailableRoles[0]
+	} else {
+		plan.RoleID = strings.Join(validRoles, ",")
 	}
 
 	// 验证 scene_direction 不为空

@@ -393,7 +393,7 @@ func (d *DirectorEngine) decideLLM(
 				},
 				"next_role": map[string]any{
 					"type":        "string",
-					"description": "下一个角色，必须在可用角色列表中",
+					"description": "下一个角色，必须在可用角色列表中。单角色直接写名字如\"host\"，多角色用逗号分隔如\"host,economist\"（不要有空格，不要用+或and）",
 				},
 				"output_action": map[string]any{
 					"type":        "string",
@@ -767,8 +767,12 @@ func (d *DirectorEngine) buildUserPromptForLLM(
    - 其他根据状态灵活选择
 
 4. **选择合适的角色（Role）**:
-   - 在 available_roles 中选择
-   - 根据拍点和用户状态匹配
+   - **重要**：next_role必须从available_roles中选择
+   - **格式要求**：
+     * 单个角色：直接写角色名，如 "host"
+     * 多个角色：用逗号分隔，如 "host,economist"（注意：逗号后无空格）
+     * 不要使用 "+"、"and"、"_and_" 等其他分隔符
+   - 根据拍点和用户状态匹配合适的角色
 
 5. **生成内容方向（content_direction）**:
    - 基于对话主题、对话上下文描述下角色本轮要说的大概内容方向。”

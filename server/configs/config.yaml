@@ -21,8 +21,8 @@ llm:
   openai:
     api_key: ""  # 可以从环境变量 LLM_API_KEY 读取
     api_url: "https://api.openai.com/v1"
-    model: "gpt-4o"  # 或 "gpt-4-turbo"
-    temperature: 0.7
+    model: "gpt-5-nano-2025-08-07"
+    temperature: 1
     max_tokens: 4096  # JSON 结构化输出需要足够的 tokens
   anthropic:
     api_key: ""  # 可以从环境变量 ANTHROPIC_API_KEY 读取
@@ -94,6 +94,7 @@ paths:
   prompts: "server/configs/prompts"
   concepts: "server/configs/concepts_econ.json"
   bubbles: "server/configs/bubbles.json"
+  scripts: "server/configs/scripts"
 
 # 角色配置（可扩展更多字段）
 roles:
