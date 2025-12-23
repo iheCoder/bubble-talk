@@ -36,6 +36,9 @@ type MultiVoiceGateway struct {
 	// 事件处理器（由 Orchestrator 注入）：用于将网关收到的业务事件（如用户说话、插话、退出等）转发给编排器
 	eventHandler EventHandler
 
+	// 事件队列：串行处理事件，防止并发修改 SessionState
+	eventQueue *EventQueue
+
 	// 工具注册表（支持function calling）：所有角色共享的工具集
 	toolRegistry *tool.ToolRegistry
 
@@ -44,6 +47,11 @@ type MultiVoiceGateway struct {
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	closeChan chan struct{}
+
+	// ASR 事件源配置：解决"双终态事件源"问题
+	// true: 只使用 conversation.item.input_audio_transcription.completed
+	// false: 只使用 response.done/response.audio_transcript.done
+	useTranscriptionCompleted bool
 
 	// 当前响应的元数据（角色、Beat等）：记录当前正在说话的角色和对应的剧情节拍信息
 	activeMetadata     map[string]interface{}
@@ -71,7 +79,7 @@ type MultiVoiceGateway struct {
 func NewMultiVoiceGateway(sessionID string, clientConn *websocket.Conn, config GatewayConfig) *MultiVoiceGateway {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &MultiVoiceGateway{
+	g := &MultiVoiceGateway{
 		sessionID:  sessionID,
 		clientConn: clientConn,
 		ctx:        ctx,
@@ -79,12 +87,21 @@ func NewMultiVoiceGateway(sessionID string, clientConn *websocket.Conn, config G
 		closeChan:  make(chan struct{}),
 		config:     config,
 		logger:     log.Default(),
+		// 默认使用 transcription.completed 作为唯一 ASR 事件源
+		useTranscriptionCompleted: true,
 	}
+
+	return g
 }
 
 // SetEventHandler 设置事件处理器（Orchestrator 注入）
 func (g *MultiVoiceGateway) SetEventHandler(handler EventHandler) {
 	g.eventHandler = handler
+	// 创建事件队列，确保事件串行处理
+	if g.eventQueue == nil {
+		g.eventQueue = NewEventQueue(g.sessionID, handler, g.logger)
+		g.logger.Printf("[MultiVoiceGateway] Event queue created for session %s", g.sessionID)
+	}
 }
 
 // SetToolRegistry 设置工具注册表
@@ -242,6 +259,7 @@ func (g *MultiVoiceGateway) handleBargeIn(msg *ClientMessage) error {
 }
 
 // forwardToOrchestrator 转发事件给 Orchestrator
+// 修复方案：使用事件队列串行处理，防止 SessionState 并发修改
 func (g *MultiVoiceGateway) forwardToOrchestrator(msg *ClientMessage) error {
 	if g.eventHandler == nil {
 		g.logger.Printf("[MultiVoiceGateway] ⚠️  no event handler set, dropping event: %s", msg.Type)
@@ -250,19 +268,31 @@ func (g *MultiVoiceGateway) forwardToOrchestrator(msg *ClientMessage) error {
 
 	g.logger.Printf("[MultiVoiceGateway] Forwarding event to Orchestrator: type=%s text=%s", msg.Type, msg.Text)
 
-	go func() {
-		ctx, cancel := context.WithTimeout(g.ctx, 10*time.Second)
-		defer cancel()
-
-		if err := g.eventHandler(ctx, msg); err != nil {
-			g.logger.Printf("[MultiVoiceGateway] ❌ Orchestrator handler error: %v", err)
-			// 发送错误给客户端
-			g.sendErrorToClient(fmt.Sprintf("Orchestrator error: %v", err))
-		} else {
-			g.logger.Printf("[MultiVoiceGateway] ✅ Orchestrator handled event successfully")
+	// 使用事件队列代替直接的 goroutine，保证：
+	// 1. 同一 session 的所有事件串行处理（防止并发写 SessionState）
+	// 2. 事件按接收顺序处理（防止 asr_final 和 assistant_text 乱序）
+	if g.eventQueue != nil {
+		if err := g.eventQueue.Enqueue(msg); err != nil {
+			g.logger.Printf("[MultiVoiceGateway] ❌ Failed to enqueue event: %v", err)
+			g.sendErrorToClient(fmt.Sprintf("Event queue error: %v", err))
+			return err
 		}
-	}()
+		return nil
+	}
 
+	// 降级方案：如果事件队列未初始化，使用同步处理（不再使用 goroutine）
+	// 这样虽然可能阻塞，但至少不会出现并发问题
+	g.logger.Printf("[MultiVoiceGateway] ⚠️  Event queue not initialized, using synchronous processing")
+	ctx, cancel := context.WithTimeout(g.ctx, 10*time.Second)
+	defer cancel()
+
+	if err := g.eventHandler(ctx, msg); err != nil {
+		g.logger.Printf("[MultiVoiceGateway] ❌ Orchestrator handler error: %v", err)
+		g.sendErrorToClient(fmt.Sprintf("Orchestrator error: %v", err))
+		return err
+	}
+
+	g.logger.Printf("[MultiVoiceGateway] ✅ Orchestrator handled event successfully")
 	return nil
 }
 
@@ -330,9 +360,14 @@ func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 		g.logger.Printf("[MultiVoiceGateway] User stopped speaking")
 
 	case "conversation.item.input_audio_transcription.completed":
-		// ASR 已完成，服务器生成了“最终可用的用户语音文本”，用户“说了什么”在这一刻才确定
+		// ASR 已完成，服务器生成了"最终可用的用户语音文本"，用户"说了什么"在这一刻才确定
 		// 当 session 配置了 input_audio_transcription 时触发
-		return g.handleASRTranscriptionCompleted(event)
+		// 修复方案：这是 ASR 的唯一真相来源（如果 useTranscriptionCompleted=true）
+		if g.useTranscriptionCompleted {
+			return g.handleASRTranscriptionCompleted(event)
+		}
+		g.logger.Printf("[MultiVoiceGateway] Ignoring transcription.completed (using response.done as ASR source)")
+		return nil
 
 	// response 生命周期事件
 	case "response.created":
@@ -356,9 +391,20 @@ func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 
 	case "response.audio_transcript.done", "response.done":
 		// assistant 语音转写文本已完成，response 生命周期彻底结束
-		// 即使我们不想要音频，模型有时也会把对用户输入的"回复"（或者就是转写本身，取决于 prompt）放在 response 里。
-		// 我们需要从这里提取转写文本，并进行去重处理。
-		return g.handleASRResponseDone(event)
+		// 修复方案：只在 useTranscriptionCompleted=false 时使用这个作为 ASR 源
+		if !g.useTranscriptionCompleted {
+			return g.handleASRResponseDone(event)
+		}
+
+		// 如果使用 transcription.completed，这里仍然要取消 ASR response，但不上报文本
+		g.logger.Printf("[MultiVoiceGateway] ASR response done (will cancel but not report, using transcription.completed as source)")
+		asrConn, _ := g.voicePool.GetASRConn()
+		if asrConn != nil {
+			if err := asrConn.CancelResponse(); err != nil {
+				g.logger.Printf("[MultiVoiceGateway] ⚠️ Failed to cancel ASR response: %v", err)
+			}
+		}
+		return nil
 
 	}
 
@@ -445,6 +491,8 @@ func (g *MultiVoiceGateway) handleASRResponseDone(event map[string]interface{}) 
 }
 
 // handleASRTranscriptionCompleted 处理转写完成事件
+// 修复方案：这是 ASR 的唯一真相来源（当 useTranscriptionCompleted=true）
+// 避免与 handleASRResponseDone 重复上报同一句话
 func (g *MultiVoiceGateway) handleASRTranscriptionCompleted(event map[string]interface{}) error {
 	transcript, _ := event["transcript"].(string)
 	if transcript == "" {
@@ -452,7 +500,7 @@ func (g *MultiVoiceGateway) handleASRTranscriptionCompleted(event map[string]int
 		return nil
 	}
 
-	g.logger.Printf("[MultiVoiceGateway] User transcript: %s", transcript)
+	g.logger.Printf("[MultiVoiceGateway] ✅ [PRIMARY ASR SOURCE] User transcript: %s", transcript)
 
 	// 1. 同步用户文本到所有角色连接（文本镜像）
 	if err := g.voicePool.SyncUserText(transcript); err != nil {
@@ -848,6 +896,15 @@ func (g *MultiVoiceGateway) Close() error {
 	g.closeOnce.Do(func() {
 		g.cancel()
 		close(g.closeChan)
+
+		// 关闭事件队列（等待所有待处理事件完成）
+		if g.eventQueue != nil {
+			stats := g.eventQueue.GetStats()
+			g.logger.Printf("[MultiVoiceGateway] Event queue stats: %+v", stats)
+			if err := g.eventQueue.Close(); err != nil {
+				g.logger.Printf("[MultiVoiceGateway] ⚠️  Error closing event queue: %v", err)
+			}
+		}
 
 		// 关闭音色池
 		if g.voicePool != nil {
