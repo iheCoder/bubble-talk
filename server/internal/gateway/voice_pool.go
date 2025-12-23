@@ -185,6 +185,10 @@ func (vp *VoicePool) GetRoleConn(ctx context.Context, role string) (*RoleConn, e
 
 	// 检查是否有其他 goroutine 正在创建
 	vp.roleConnCreatingMu.Lock()
+	// Ensure the map is initialized to avoid panic when tests or callers construct VoicePool directly
+	if vp.roleConnCreating == nil {
+		vp.roleConnCreating = make(map[string]chan struct{})
+	}
 	creatingChan, isCreating := vp.roleConnCreating[role]
 	if isCreating {
 		// 有其他 goroutine 正在创建，等待它完成
