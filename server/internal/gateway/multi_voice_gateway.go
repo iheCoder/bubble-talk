@@ -16,23 +16,27 @@ import (
 
 // MultiVoiceGateway 是支持多音色的语音网关
 // 核心架构：
-// 1. 每个角色一个独立的 Realtime 连接（voice 固定）
-// 2. 一个 ASR 专用连接（只做语音识别）
-// 3. 通过"文本镜像"让所有连接共享对话上下文
+//  1. 每个角色一个独立的 Realtime 连接（voice 固定）：负责该角色的语音合成（TTS）和对话逻辑。
+//  2. 一个 ASR 专用连接（只做语音识别）：负责接收用户的音频流，进行语音转文字（STT）。
+//     这个连接通常配置为不生成音频，或者生成的音频被丢弃。
+//  3. 通过"文本镜像"让所有连接共享对话上下文：
+//     - 当 ASR 识别到用户说话时，将文本作为 Text Item 注入到所有角色连接。
+//     - 当某个角色说话时，将其回复文本作为 Assistant Item 注入到其他角色连接。
+//     这样所有连接都能维护完整的对话历史。
 type MultiVoiceGateway struct {
 	sessionID string
 
-	// 客户端连接
+	// 客户端连接：与前端（Web/App）的 WebSocket 连接，传输音频流和控制指令
 	clientConn     *websocket.Conn
 	clientConnLock sync.Mutex
 
-	// 音色池（管理多个角色连接）
+	// 音色池（管理多个角色连接）：封装了与 OpenAI Realtime API 的多个连接
 	voicePool *VoicePool
 
-	// 事件处理器（由 Orchestrator 注入）
+	// 事件处理器（由 Orchestrator 注入）：用于将网关收到的业务事件（如用户说话、插话、退出等）转发给编排器
 	eventHandler EventHandler
 
-	// 工具注册表（支持function calling）
+	// 工具注册表（支持function calling）：所有角色共享的工具集
 	toolRegistry *tool.ToolRegistry
 
 	// 状态管理
@@ -41,17 +45,18 @@ type MultiVoiceGateway struct {
 	closeOnce sync.Once
 	closeChan chan struct{}
 
-	// 当前响应的元数据（角色、Beat等）
+	// 当前响应的元数据（角色、Beat等）：记录当前正在说话的角色和对应的剧情节拍信息
 	activeMetadata     map[string]interface{}
 	activeMetadataLock sync.RWMutex
 
 	// ASR 去重（避免 response.done 与 response.audio_transcript.done 重复触发）
+	// OpenAI Realtime API 可能会通过多种事件返回转写结果，我们需要去重以避免重复处理
 	asrDedupMu          sync.Mutex
 	lastASRResponseID   string
 	lastASRTranscript   string
 	lastASRTranscriptAt time.Time
 
-	// 序列号生成器（用于 ServerMessage）
+	// 序列号生成器（用于 ServerMessage）：保证发送给客户端的消息有序
 	seqCounter int64
 	seqLock    sync.Mutex
 
@@ -293,6 +298,9 @@ func (g *MultiVoiceGateway) asrReadLoop() {
 }
 
 // handleASREvent 处理 ASR 连接的事件
+// ASR 连接的主要职责是接收用户音频并转写为文本，它不应该生成音频响应。
+// 但由于 OpenAI Realtime API 的机制，VAD 触发时可能会自动创建 response。
+// 我们需要处理这些事件，提取转写文本，并确保不会产生不需要的音频输出。
 func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 	var event map[string]interface{}
 	if err := json.Unmarshal(data, &event); err != nil {
@@ -304,26 +312,34 @@ func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 
 	switch eventType {
 	case "error":
+		// 记录 API 错误
 		g.logRealtimeError("ASR", event)
 		return nil
 
-	case "conversation.item.input_audio_transcription.completed":
-		// 用户语音转写完成
-		return g.handleASRTranscriptionCompleted(event)
-
+	// ASR 相关事件
 	case "input_audio_buffer.speech_started":
-		// 用户开始说话
+		// VAD 检测到用户开始说话
+		// 此时可以做一些 UI 交互（如显示"正在听..."）
 		g.logger.Printf("[MultiVoiceGateway] User started speaking")
-		// 可以选择在这里触发插话中断
-		// 但通常我们让客户端发送 barge_in 事件更准确
+		// 注意：我们通常依赖客户端发送的 barge_in 事件来打断 TTS，
+		// 因为客户端的 VAD 通常比服务端的更及时（没有网络延迟）。
 
 	case "input_audio_buffer.speech_stopped":
-		// 用户停止说话
+		// VAD 检测到用户停止说话
+		// 注意不等同于用户真的说完了，可能只是短暂停顿、VAD 静音阈值触发
 		g.logger.Printf("[MultiVoiceGateway] User stopped speaking")
 
+	case "conversation.item.input_audio_transcription.completed":
+		// ASR 已完成，服务器生成了“最终可用的用户语音文本”，用户“说了什么”在这一刻才确定
+		// 当 session 配置了 input_audio_transcription 时触发
+		return g.handleASRTranscriptionCompleted(event)
+
+	// response 生命周期事件
 	case "response.created":
-		// ASR 连接不应该创建 response，但由于API行为，它会创建
-		// 我们需要从 response 中提取转写，然后取消 response
+		// 一个新的 response 生命周期被创建了
+		// ASR 连接不应该创建 response，但由于 API 默认行为（VAD 触发 response），它可能会创建。
+		// 我们需要记录这个 response ID，以便后续提取转写或取消它。
+		// 关键点：ASR 连接的 instructions 通常设置为空或"只做转写"，以减少模型生成内容的消耗。
 		responseID, _ := event["response"].(map[string]interface{})["id"].(string)
 		if responseID != "" {
 			g.logger.Printf("[MultiVoiceGateway] ⚠️ ASR created response %s (will extract transcription and cancel)", responseID)
@@ -333,21 +349,28 @@ func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 			}
 		}
 
+	case "response.audio_transcript.delta":
+		// assistant 语音输出对应的“转写文本（实时）”的增量
+		// 忽略 ASR 的音频转写增量（我们只关心最终文本，避免频繁刷新 UI 或逻辑）
+		return nil
+
 	case "response.audio_transcript.done", "response.done":
-		// ASR response 完成，提取转写文本
+		// assistant 语音转写文本已完成，response 生命周期彻底结束
+		// 即使我们不想要音频，模型有时也会把对用户输入的"回复"（或者就是转写本身，取决于 prompt）放在 response 里。
+		// 我们需要从这里提取转写文本，并进行去重处理。
 		return g.handleASRResponseDone(event)
 
-	case "response.audio_transcript.delta":
-		// 忽略 ASR 的音频转写增量（我们只关心最终文本）
-		return nil
 	}
 
 	return nil
 }
 
 // handleASRResponseDone 从 ASR response 中提取转写并取消 response
+// 目的：获取用户输入的文本内容，同时确保 ASR 连接不播放音频。
 func (g *MultiVoiceGateway) handleASRResponseDone(event map[string]interface{}) error {
 	// 从 response 中提取转写
+	// 结构可能是 response.output[].content[].transcript (response.done)
+	// 或者是直接的 transcript 字段 (response.audio_transcript.done)
 	var transcript string
 	responseID := ""
 
@@ -385,6 +408,7 @@ func (g *MultiVoiceGateway) handleASRResponseDone(event map[string]interface{}) 
 		return nil
 	}
 
+	// ASR 去重：避免同一个 response 的多次事件导致重复处理
 	if g.shouldDropASRResult(responseID, transcript) {
 		g.logger.Printf("[MultiVoiceGateway] ⚠️ Duplicate ASR transcript dropped (response_id=%s)", responseID)
 		return nil
@@ -392,7 +416,8 @@ func (g *MultiVoiceGateway) handleASRResponseDone(event map[string]interface{}) 
 
 	g.logger.Printf("[MultiVoiceGateway] 📝 ASR transcription: %s", transcript)
 
-	// 取消 ASR response（我们不需要它的音频输出）
+	// 取消 ASR response（我们不需要它的音频输出，防止它"说话"）
+	// 虽然 response 已经 done，但取消操作可以确保清理相关状态
 	asrConn, _ := g.voicePool.GetASRConn()
 	if asrConn != nil {
 		if err := asrConn.CancelResponse(); err != nil {
@@ -401,11 +426,14 @@ func (g *MultiVoiceGateway) handleASRResponseDone(event map[string]interface{}) 
 	}
 
 	// 1. 同步用户文本到所有角色连接（文本镜像）
+	// 这是多音色架构的关键：让所有角色都知道用户说了什么，
+	// 即使它们不是接收音频的那个连接。
 	if err := g.voicePool.SyncUserText(transcript); err != nil {
 		g.logger.Printf("[MultiVoiceGateway] ⚠️  Failed to sync user text: %v", err)
 	}
 
 	// 2. 转发给 Orchestrator 处理
+	// Orchestrator 会根据这个文本决定下一步的剧情（Beat）或让哪个角色回答。
 	msg := &ClientMessage{
 		Type:     EventTypeASRFinal,
 		EventID:  fmt.Sprintf("asr_%d", time.Now().UnixNano()),
@@ -483,6 +511,8 @@ func (g *MultiVoiceGateway) roleConnReadLoop(role string) {
 }
 
 // handleRoleConnEvent 处理角色连接的事件
+// 角色连接主要负责 TTS（语音合成）和对话逻辑。
+// 我们需要监听这些事件来同步状态、转发音频给客户端，以及进行文本镜像。
 func (g *MultiVoiceGateway) handleRoleConnEvent(role string, data []byte) error {
 	var event map[string]interface{}
 	if err := json.Unmarshal(data, &event); err != nil {
@@ -498,28 +528,33 @@ func (g *MultiVoiceGateway) handleRoleConnEvent(role string, data []byte) error 
 		return nil
 
 	case "response.created":
-		// 响应创建 - 发送 tts_started 事件给前端
+		// 响应创建 - 意味着角色准备开始说话
+		// 我们记录 active response ID，以便在插话时能取消它
 		responseID, _ := event["response"].(map[string]interface{})["id"].(string)
 		conn, _ := g.voicePool.GetRoleConn(g.ctx, role)
 		if conn != nil {
 			conn.SetActiveResponse(responseID)
 		}
 
-		// 发送 tts_started 给前端，包含角色信息
+		// 发送 tts_started 给前端，包含角色信息，让前端显示"正在说话"的动画
 		g.sendTTSStartedToClient(role)
 
 	case "response.audio.delta":
-		// 音频增量（转发给客户端）
+		// 音频增量 - 这是实时的语音数据
+		// 我们直接转发给客户端播放
 		return g.handleAudioDelta(role, event)
 
 	case "response.audio_transcript.delta":
-		// 文本增量（可选：显示实时字幕）
+		// 文本增量 - 实时字幕
+		// 目前只打印日志，如果前端需要实时逐字显示，可以转发这个事件
 		delta, _ := event["delta"].(string)
 		g.logger.Printf("[MultiVoiceGateway] Role %s transcript delta: %s", role, delta)
 
 	case "response.done":
-		// 响应完成 - 发送 tts_completed 给前端
+		// 响应完成 - 角色说完了一句话
+		// 1. 通知前端 TTS 结束
 		g.sendTTSCompletedToClient(role)
+		// 2. 提取完整文本，进行文本镜像（同步给其他角色）和业务处理
 		return g.handleResponseDone(role, event)
 	}
 
