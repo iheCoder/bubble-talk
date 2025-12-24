@@ -86,6 +86,15 @@ type MultiVoiceGateway struct {
 	seqCounter int64
 	seqLock    sync.Mutex
 
+	// 音频闸门：用于实现“立刻打断”的体验保障。
+	// 背景：即便我们发送了 response.cancel，Realtime 可能仍会有少量 in-flight 的 audio.delta；
+	// 若继续转发给前端，用户会感知为“打断不生效”。因此在检测到用户开口/插话时，
+	// 直接在网关侧停止转发当前 speaker 的音频，直到该 response 结束。
+	audioGateMu sync.Mutex
+	mutedRole   string
+	mutedAt     time.Time
+	mutedReason string
+
 	// 配置
 	config GatewayConfig
 
@@ -288,15 +297,13 @@ func (g *MultiVoiceGateway) handleBargeIn(msg *ClientMessage) error {
 	g.dropPendingSpeech("client_barge_in")
 
 	// 取消当前正在说话的角色的响应
+	g.muteActiveSpeakerAudio("client_barge_in")
 	if err := g.voicePool.CancelCurrentResponse(); err != nil {
 		g.logger.Printf("[MultiVoiceGateway] failed to cancel response: %v", err)
 	}
 
 	// 通知客户端清空音频缓冲区
-	g.sendToClient(&ServerMessage{
-		Type:     EventTypeTTSInterrupted,
-		ServerTS: time.Now(),
-	})
+	g.sendTTSInterruptedToClient("client_barge_in")
 
 	// 转发给 Orchestrator
 	return g.forwardToOrchestrator(msg)
@@ -401,23 +408,33 @@ func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 			activeSpeaker = g.voicePool.GetSpeakingRole()
 		}
 
+		// 给前端一个“我听到了”的强信号，便于 UI 做录音态/打断态联动。
+		g.sendToClient(&ServerMessage{
+			Type:     EventTypeSpeechStarted,
+			ServerTS: time.Now(),
+		})
+
 		// 用户开口时：丢弃尚未播放的旧指令，避免“还没说完就又发现要说另一段”的精神分裂感。
 		g.dropPendingSpeech("server_vad_speech_started")
 
 		// 服务端兜底：如果有角色正在说话，立即取消
 		// 这是对客户端 barge_in 的补充，防止客户端延迟或未发送 barge_in
+		if activeSpeaker != "" {
+			g.muteRoleAudio(activeSpeaker, "server_vad_speech_started")
+		}
 		if err := g.voicePool.CancelCurrentResponse(); err != nil {
 			g.logger.Printf("[MultiVoiceGateway] ⚠️  Server-side barge-in cancel failed: %v", err)
 		} else {
-			g.logger.Printf("[MultiVoiceGateway] ✅ Server-side barge-in: cancelled current response")
+			if activeSpeaker != "" {
+				g.logger.Printf("[MultiVoiceGateway] ✅ Server-side barge-in: cancelled current response (role=%s)", activeSpeaker)
+			} else {
+				g.logger.Printf("[MultiVoiceGateway] ✅ Server-side barge-in: no active speaker")
+			}
 		}
 
 		// 仅在确实有 AI 在播时才清空缓冲，避免前端收到噪音事件。
 		if activeSpeaker != "" {
-			g.sendToClient(&ServerMessage{
-				Type:     EventTypeTTSInterrupted,
-				ServerTS: time.Now(),
-			})
+			g.sendTTSInterruptedToClient("server_vad_speech_started")
 		}
 
 		return nil
@@ -426,6 +443,10 @@ func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 		// VAD 检测到用户停止说话
 		// 注意不等同于用户真的说完了，可能只是短暂停顿、VAD 静音阈值触发
 		g.logger.Printf("[MultiVoiceGateway] User stopped speaking")
+		g.sendToClient(&ServerMessage{
+			Type:     EventTypeSpeechStopped,
+			ServerTS: time.Now(),
+		})
 		return nil
 
 	case "conversation.item.input_audio_transcription.completed":
@@ -450,8 +471,27 @@ func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 			asrConn, _ := g.voicePool.GetASRConn()
 			if asrConn != nil {
 				asrConn.SetActiveResponse(responseID)
+				// ASR 连接不应产生任何可听输出。若服务端意外创建了 response，优先取消，避免无意义的音频生成/带宽消耗。
+				// 当 useTranscriptionCompleted=true 时，用户文本以 transcription.completed 为准，不依赖这个 response。
+				if g.useTranscriptionCompleted {
+					if err := asrConn.CancelResponse(); err != nil {
+						g.logger.Printf("[MultiVoiceGateway] ⚠️ Failed to cancel unexpected ASR response (response_id=%s): %v", responseID, err)
+					} else {
+						g.logger.Printf("[MultiVoiceGateway] ✅ Cancelled unexpected ASR response early (response_id=%s)", responseID)
+					}
+				}
 			}
 		}
+
+	case "response.audio.delta":
+		// ASR 连接不应该输出音频；一旦出现，立刻取消，避免持续生成无用音频。
+		asrConn, _ := g.voicePool.GetASRConn()
+		if asrConn != nil {
+			if err := asrConn.CancelResponse(); err != nil {
+				g.logger.Printf("[MultiVoiceGateway] ⚠️ Failed to cancel ASR audio output: %v", err)
+			}
+		}
+		return nil
 
 	case "response.audio_transcript.delta":
 		// assistant 语音输出对应的“转写文本（实时）”的增量
@@ -571,6 +611,13 @@ func (g *MultiVoiceGateway) handleASRTranscriptionCompleted(event map[string]int
 
 	g.logger.Printf("[MultiVoiceGateway] ✅ [PRIMARY ASR SOURCE] User transcript: %s", transcript)
 
+	// 给前端一个明确的“最终转写”信号，否则用户会觉得“系统没听到”。
+	_ = g.sendToClient(&ServerMessage{
+		Type:     EventTypeASRFinal,
+		Text:     transcript,
+		ServerTS: time.Now(),
+	})
+
 	// 1. 同步用户文本到所有角色连接（文本镜像）
 	if err := g.voicePool.SyncUserText(transcript); err != nil {
 		g.logger.Printf("[MultiVoiceGateway] ⚠️  Failed to sync user text: %v", err)
@@ -663,6 +710,9 @@ func (g *MultiVoiceGateway) handleRoleConnEvent(role string, data []byte) error 
 			}
 		}
 
+		// 如果该角色此前被“闸门静音”，说明上一次发言已被用户打断；新的 response.created 到来时恢复音频转发。
+		g.unmuteRoleAudio(role)
+
 		// 3. 发送 tts_started 给前端，包含角色信息，让前端显示"正在说话"的动画
 		g.sendTTSStartedToClient(role)
 
@@ -701,6 +751,9 @@ func (g *MultiVoiceGateway) handleRoleConnEvent(role string, data []byte) error 
 
 		// 2. 清除正在说话的角色
 		g.voicePool.ClearSpeakingRole()
+
+		// 2.1 恢复音频转发（避免后续同角色新 response 被误伤）
+		g.unmuteRoleAudio(role)
 
 		// 3. 注销元数据
 		if responseID != "" {
@@ -814,6 +867,11 @@ func (g *MultiVoiceGateway) handleAudioDelta(role string, event map[string]inter
 		return nil
 	}
 
+	// 音频闸门：用户开口/插话后，立即停止转发当前 speaker 的音频，确保“立刻打断”的体验。
+	if g.isRoleAudioMuted(role) {
+		return nil
+	}
+
 	// 解码 Base64
 	audioData, err := base64.StdEncoding.DecodeString(delta)
 	if err != nil {
@@ -850,6 +908,7 @@ func (g *MultiVoiceGateway) handleResponseDone(role string, event map[string]int
 
 	// 清除正在说话的角色
 	g.voicePool.ClearSpeakingRole()
+	g.unmuteRoleAudio(role)
 
 	// 注销元数据
 	if responseID != "" {
@@ -912,6 +971,59 @@ func (g *MultiVoiceGateway) handleResponseDone(role string, event map[string]int
 	})
 
 	return nil
+}
+
+// sendTTSInterruptedToClient 发送 TTS 中断事件给客户端
+func (g *MultiVoiceGateway) sendTTSInterruptedToClient(reason string) {
+	g.logger.Printf("[MultiVoiceGateway] 📤 Sending tts_interrupted to client: reason=%s", reason)
+	_ = g.sendToClient(&ServerMessage{
+		Type:     EventTypeTTSInterrupted,
+		Metadata: map[string]interface{}{"reason": reason},
+		ServerTS: time.Now(),
+	})
+}
+
+// muteActiveSpeakerAudio 静音当前正在说话的角色音频
+func (g *MultiVoiceGateway) muteActiveSpeakerAudio(reason string) {
+	if g.voicePool == nil {
+		return
+	}
+	role := g.voicePool.GetSpeakingRole()
+	if role == "" {
+		return
+	}
+	g.muteRoleAudio(role, reason)
+}
+
+// muteRoleAudio 静音指定角色的音频输出
+func (g *MultiVoiceGateway) muteRoleAudio(role string, reason string) {
+	if role == "" {
+		return
+	}
+	g.audioGateMu.Lock()
+	g.mutedRole = role
+	g.mutedAt = time.Now()
+	g.mutedReason = reason
+	g.audioGateMu.Unlock()
+}
+
+// unmuteRoleAudio 取消静音指定角色的音频输出
+func (g *MultiVoiceGateway) unmuteRoleAudio(role string) {
+	g.audioGateMu.Lock()
+	if g.mutedRole == role {
+		g.mutedRole = ""
+		g.mutedAt = time.Time{}
+		g.mutedReason = ""
+	}
+	g.audioGateMu.Unlock()
+}
+
+// isRoleAudioMuted 检查指定角色是否被静音
+func (g *MultiVoiceGateway) isRoleAudioMuted(role string) bool {
+	g.audioGateMu.Lock()
+	muted := g.mutedRole == role && role != ""
+	g.audioGateMu.Unlock()
+	return muted
 }
 
 // snapshotActiveMetadata 获取角色的最新响应元数据

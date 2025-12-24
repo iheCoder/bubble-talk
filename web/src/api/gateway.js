@@ -19,6 +19,7 @@ export class BubbleTalkGateway {
     this.onASRFinal = null;   // 最终转写
     this.onTTSStarted = null;  // TTS 开始
     this.onTTSCompleted = null; // TTS 完成
+    this.onTTSInterrupted = null; // TTS 被打断
     this.onAudioData = null;   // 接收音频数据
     this.onError = null;       // 错误
     this.onConnected = null;   // 连接成功
@@ -86,6 +87,9 @@ export class BubbleTalkGateway {
           break;
         case 'tts_completed':
           if (this.onTTSCompleted) this.onTTSCompleted(message.metadata);
+          break;
+        case 'tts_interrupted':
+          if (this.onTTSInterrupted) this.onTTSInterrupted(message.metadata);
           break;
         case 'assistant_text':
           console.log('[Gateway] Assistant text:', message.text);
@@ -385,6 +389,7 @@ export class AudioPlayer {
     this.outputSampleRate = 24000;
     this.onDrain = null;
     this._drainTimer = null;
+    this._activeSources = [];
   }
 
   async init() {
@@ -418,6 +423,10 @@ export class AudioPlayer {
       const source = this.audioContext.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(this.gainNode);
+      this._activeSources.push(source);
+      source.onended = () => {
+        this._activeSources = this._activeSources.filter((s) => s !== source);
+      };
 
       const now = this.audioContext.currentTime;
       if (this.nextStartTime < now) {
@@ -430,6 +439,28 @@ export class AudioPlayer {
       console.log('[AudioPlayer] Playing audio:', audioBuffer.duration, 'seconds');
     } catch (err) {
       console.error('[AudioPlayer] Failed to play audio:', err);
+    }
+  }
+
+  // 立刻停止播放并清空排队的音频（用于插话打断）。
+  interrupt() {
+    if (!this.audioContext) {
+      return;
+    }
+
+    for (const source of this._activeSources) {
+      try {
+        source.stop(0);
+      } catch {
+        // ignore
+      }
+    }
+    this._activeSources = [];
+    this.nextStartTime = this.audioContext.currentTime;
+
+    if (this._drainTimer) {
+      window.clearTimeout(this._drainTimer);
+      this._drainTimer = null;
     }
   }
 

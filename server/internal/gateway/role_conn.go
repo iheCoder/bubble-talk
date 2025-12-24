@@ -179,10 +179,8 @@ func (rc *RoleConn) Initialize(ctx context.Context) error {
 		Session: sessionConfig,
 	}
 
-	// 如果是 ASR 专用连接，禁用音频输出
-	if !rc.config.EnableAudioOutput {
-		update.Session.Modalities = []string{"text"}
-	}
+	// ASR 专用连接仍然需要 "audio" modality 来接收 input_audio_buffer.append 与 server_vad 事件。
+	// “不输出音频”由上层保证：不对客户端转发 ASR 的 response.audio.delta，并在必要时 cancel。
 
 	// 设置默认值
 	if rc.config.InputAudioFormat == "" {

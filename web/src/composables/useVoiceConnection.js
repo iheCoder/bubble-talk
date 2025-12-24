@@ -64,6 +64,22 @@ export function useVoiceConnection(sessionId, options = {}) {
         console.log('[VoiceConnection] AI finished')
       }
 
+      gateway.value.onTTSInterrupted = () => {
+        try {
+          audioPlayer.value?.interrupt()
+        } catch (err) {
+          console.warn('[VoiceConnection] Failed to interrupt audio:', err)
+        }
+      }
+
+      gateway.value.onSpeechStarted = () => {
+        try {
+          audioPlayer.value?.interrupt()
+        } catch (err) {
+          console.warn('[VoiceConnection] Failed to interrupt audio on speech_started:', err)
+        }
+      }
+
       gateway.value.onAudioData = async (blob) => {
         await audioPlayer.value.playAudioBlob(blob)
       }
@@ -139,4 +155,3 @@ export function useVoiceConnection(sessionId, options = {}) {
     toggleMute,
   }
 }
-

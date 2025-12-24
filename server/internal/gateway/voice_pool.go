@@ -250,6 +250,11 @@ func (vp *VoicePool) GetRoleConn(ctx context.Context, role string) (*RoleConn, e
 		return nil, fmt.Errorf("create role conn on-demand: %w", err)
 	}
 
+	// 新连接创建完成后，必须先把现有对话历史同步进去，再对外可见（写入 roleConns）。
+	// 否则会出现竞态：用户刚说完 -> Orchestrator 立刻让某角色发言 -> 该角色 response.create 先发出去，
+	// 但 user message 还没注入到该连接的对话历史里，于是模型“像没听到一样”。
+	vp.syncConversationHistoryToRole(role, roleConn)
+
 	// 注册连接
 	vp.roleConnsMu.Lock()
 	vp.roleConns[role] = roleConn
@@ -258,6 +263,38 @@ func (vp *VoicePool) GetRoleConn(ctx context.Context, role string) (*RoleConn, e
 	vp.logf("[VoicePool:%s] ✅ Role conn for '%s' (voice=%s) created on-demand", vp.sessionID, role, voice)
 
 	return roleConn, nil
+}
+
+// syncConversationHistoryToRole 将现有对话历史同步到指定角色连接
+func (vp *VoicePool) syncConversationHistoryToRole(role string, conn *RoleConn) {
+	if conn == nil {
+		return
+	}
+
+	vp.conversationHistoryMu.RLock()
+	history := make([]ConversationTurn, len(vp.conversationHistory))
+	copy(history, vp.conversationHistory)
+	vp.conversationHistoryMu.RUnlock()
+
+	if len(history) == 0 {
+		return
+	}
+
+	vp.logf("[VoicePool:%s] Syncing %d historical messages to %s", vp.sessionID, len(history), role)
+
+	for _, turn := range history {
+		switch turn.Role {
+		case "user":
+			if err := conn.SyncUserText(turn.Text); err != nil {
+				vp.logf("[VoicePool:%s] ⚠️  Failed to sync historical user text to %s: %v", vp.sessionID, role, err)
+			}
+
+		case "assistant":
+			if err := conn.SyncAssistantText(turn.Text, turn.FromRole); err != nil {
+				vp.logf("[VoicePool:%s] ⚠️  Failed to sync historical assistant text to %s: %v", vp.sessionID, role, err)
+			}
+		}
+	}
 }
 
 // GetASRConn 获取 ASR 连接
@@ -297,46 +334,16 @@ func (vp *VoicePool) SyncUserText(text string) error {
 				lastErr = err
 			}
 			vp.logf("[VoicePool:%s] ✅ Synced user text to %s", vp.sessionID, role)
-		} else {
-			// 连接不存在，异步创建并同步
-			vp.logf("[VoicePool:%s] Role %s not found, will create and sync asynchronously", vp.sessionID, role)
-			go vp.createAndSyncUserText(role, text)
+			continue
 		}
+
+		// 连接不存在：只记录历史，不主动创建连接。
+		// 说明：连接创建是一次重 I/O（拨号/握手/初始化），在 ASR 热路径里强行创建会放大尾延迟；
+		// 更关键的是，历史同步必须与连接创建“强绑定”，否则容易出现“response.create 先于历史注入”的竞态。
+		// 因此我们把“创建+同步历史”统一放到 GetRoleConn 的创建路径里做（syncConversationHistoryToRole）。
+		vp.logf("[VoicePool:%s] Role %s not found, will sync on next GetRoleConn", vp.sessionID, role)
 	}
 	return lastErr
-}
-
-// createAndSyncUserText 异步创建角色连接并同步用户文本
-func (vp *VoicePool) createAndSyncUserText(role string, text string) {
-	vp.logf("[VoicePool:%s] Creating role conn for %s asynchronously...", vp.sessionID, role)
-
-	conn, err := vp.GetRoleConn(context.Background(), role)
-	if err != nil {
-		vp.logf("[VoicePool:%s] ❌ Failed to create role conn for %s: %v", vp.sessionID, role, err)
-		return
-	}
-
-	// 同步历史记录中的所有用户消息
-	vp.conversationHistoryMu.RLock()
-	history := make([]ConversationTurn, len(vp.conversationHistory))
-	copy(history, vp.conversationHistory)
-	vp.conversationHistoryMu.RUnlock()
-
-	vp.logf("[VoicePool:%s] Syncing %d historical messages to %s", vp.sessionID, len(history), role)
-
-	for _, turn := range history {
-		if turn.Role == "user" {
-			if err := conn.SyncUserText(turn.Text); err != nil {
-				vp.logf("[VoicePool:%s] ⚠️  Failed to sync historical user text to %s: %v", vp.sessionID, role, err)
-			}
-		} else if turn.Role == "assistant" {
-			if err := conn.SyncAssistantText(turn.Text, turn.FromRole); err != nil {
-				vp.logf("[VoicePool:%s] ⚠️  Failed to sync historical assistant text to %s: %v", vp.sessionID, role, err)
-			}
-		}
-	}
-
-	vp.logf("[VoicePool:%s] ✅ Role %s created and synced with history", vp.sessionID, role)
 }
 
 // SyncAssistantText 同步助手文本到所有角色连接

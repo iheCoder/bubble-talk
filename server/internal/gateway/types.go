@@ -15,6 +15,8 @@ const (
 	EventTypeTTSStarted     EventType = "tts_started"     // TTS开始播放
 	EventTypeTTSCompleted   EventType = "tts_completed"   // TTS完成播放
 	EventTypeTTSInterrupted EventType = "tts_interrupted" // TTS被打断
+	EventTypeSpeechStarted  EventType = "speech_started"  // VAD检测到用户开始说话（服务端→客户端）
+	EventTypeSpeechStopped  EventType = "speech_stopped"  // VAD检测到用户停止说话（服务端→客户端）
 
 	// 工具/控制事件
 	EventTypeQuizAnswer    EventType = "quiz_answer"    // 答题

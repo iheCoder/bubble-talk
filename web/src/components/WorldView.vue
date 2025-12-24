@@ -209,6 +209,30 @@ const connect = async () => {
       console.log('[WorldView] ✅ AI 说话完成, role:', metadata?.role)
     }
 
+    // TTS 被打断：立刻停止前端播放队列（否则会继续播放已排队的 PCM，听感像“打断不生效”）
+    gateway.value.onTTSInterrupted = (metadata) => {
+      ttsDrainArmed.value = false
+      isAssistantSpeaking.value = false
+      try {
+        audioPlayer.value?.interrupt()
+      } catch (err) {
+        console.warn('[WorldView] Failed to interrupt audio playback:', err)
+      }
+      console.log('[WorldView] 🛑 AI 说话被打断, reason:', metadata?.reason)
+    }
+
+    // 服务端 VAD 检测到用户开口：同样应立刻停掉当前播放的 TTS
+    gateway.value.onSpeechStarted = () => {
+      if (!isAssistantSpeaking.value) return
+      ttsDrainArmed.value = false
+      isAssistantSpeaking.value = false
+      try {
+        audioPlayer.value?.interrupt()
+      } catch (err) {
+        console.warn('[WorldView] Failed to interrupt audio on speech_started:', err)
+      }
+    }
+
     // 接收音频数据并播放
     gateway.value.onAudioData = async (blob) => {
       console.log('[WorldView] 🎵 收到音频:', blob.size, 'bytes')
