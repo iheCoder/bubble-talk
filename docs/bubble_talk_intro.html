@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BubbleTalk | The AI-Native Knowledge Universe</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap"
+        rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Outfit', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        deep: '#030014',
+                        glass: 'rgba(255, 255, 255, 0.05)',
+                        'bubble-blue': '#4facfe',
+                        'bubble-purple': '#a18cd1',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: radial-gradient(circle at 50% 0%, #1a1a4a 0%, #030014 60%);
+            color: #ffffff;
+            min-height: 100vh;
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .glass-panel {
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.01) 100%);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .gradient-text {
+            background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 0 30px rgba(165, 180, 252, 0.3);
+        }
+
+        .highlight-text {
+            background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .glow-circle {
+            position: absolute;
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(79, 172, 254, 0.15) 0%, rgba(0, 0, 0, 0) 70%);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        .star {
+            position: absolute;
+            background: white;
+            border-radius: 50%;
+            opacity: 0.3;
+        }
+
+        /* Flowchart Connector Styles */
+        .flow-arrow::after {
+            content: '→';
+            display: block;
+            text-align: center;
+            font-family: 'JetBrains Mono', monospace;
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 1.5rem;
+            margin: 0.5rem 0;
+        }
+
+        @keyframes float {
+            0% {
+                transform: translateY(0px);
+            }
+
+            50% {
+                transform: translateY(-20px);
+            }
+
+            100% {
+                transform: translateY(0px);
+            }
+        }
+
+        .floating {
+            animation: float 6s ease-in-out infinite;
+        }
+
+        .delay-1 {
+            animation-delay: 1s;
+        }
+
+        .delay-2 {
+            animation-delay: 2s;
+        }
+    </style>
+</head>
+
+<body class="overflow-x-hidden selection:bg-blue-500/30">
+
+    <!-- Hero Section -->
+    <section class="min-h-screen flex flex-col justify-center items-center relative px-6">
+        <div class="glow-circle top-0 left-1/2 transform -translate-x-1/2"></div>
+
+        <!-- Decoration: Background Graphic -->
+        <div class="absolute inset-0 z-[-1] opacity-40">
+            <img src="assests/outer_world.png" class="w-full h-full object-cover opacity-30 mix-blend-screen"
+                alt="Bubble Universe Background">
+            <div class="absolute inset-0 bg-gradient-to-b from-transparent via-[#030014]/80 to-[#030014]"></div>
+        </div>
+
+        <div class="text-center max-w-5xl z-10 animate__animated animate__fadeInUp">
+            <div
+                class="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-blue-500/20 bg-blue-500/10 mb-8 backdrop-blur-md">
+                <span class="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>
+                <span class="text-blue-300 text-sm tracking-wider font-mono uppercase">AI Native Education</span>
+            </div>
+
+            <h1 class="text-7xl md:text-9xl font-black mb-6 tracking-tight gradient-text leading-none">
+                BubbleTalk
+            </h1>
+
+            <p class="text-2xl md:text-3xl font-light text-gray-300 max-w-3xl mx-auto leading-relaxed mb-12">
+                不要只是“听”播客。<br>
+                <span class="text-white font-semibold">穿越</span>进现场，成为<span class="highlight-text">知识的主角</span>。
+            </p>
+
+            <div class="flex flex-col md:flex-row gap-6 justify-center">
+                <button
+                    class="px-8 py-4 bg-white text-black font-bold rounded-full hover:scale-105 transition shadow-[0_0_30px_rgba(255,255,255,0.3)]">
+                    进入泡泡宇宙 (Enter the Bubble)
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Why Section: The Pain Points -->
+    <section class="py-24 px-6 relative">
+        <div class="max-w-7xl mx-auto">
+            <h2 class="text-4xl md:text-5xl font-bold mb-16 text-center">
+                <span class="text-gray-500 block text-lg font-mono mb-2 uppercase tracking-widest">The Problem</span>
+                为什么现在的 AI 学习<br>依然让人<span
+                    class="bg-clip-text text-transparent bg-gradient-to-r from-red-400 to-orange-400">觉得累？</span>
+            </h2>
+
+            <div class="grid md:grid-cols-3 gap-8">
+                <!-- Card 1 -->
+                <div class="glass-card p-10 rounded-3xl hover:border-red-500/30 transition duration-500 group">
+                    <div class="text-5xl mb-6 opacity-50 group-hover:scale-110 transition duration-500">⛰️</div>
+                    <h3 class="text-2xl font-bold mb-4 text-gray-100">启动难 (Friction)</h3>
+                    <p class="text-gray-400 leading-relaxed">传统课程像“爬矿山”，需要整块时间与巨大意志力。未学先累，即使是 AI 生成的课件也难以改变“重”的本质。</p>
+                </div>
+                <!-- Card 2 -->
+                <div class="glass-card p-10 rounded-3xl hover:border-red-500/30 transition duration-500 group">
+                    <div class="text-5xl mb-6 opacity-50 group-hover:scale-110 transition duration-500">😶</div>
+                    <h3 class="text-2xl font-bold mb-4 text-gray-100">太被动 (Passive)</h3>
+                    <p class="text-gray-400 leading-relaxed">听播客、看视频，你只是“旁观者”。知识如过眼云烟，听完以为懂了，一用就忘。缺乏深度加工的机会。</p>
+                </div>
+                <!-- Card 3 -->
+                <div class="glass-card p-10 rounded-3xl hover:border-red-500/30 transition duration-500 group">
+                    <div class="text-5xl mb-6 opacity-50 group-hover:scale-110 transition duration-500">🌫️</div>
+                    <h3 class="text-2xl font-bold mb-4 text-gray-100">易跑偏 (Drift)</h3>
+                    <p class="text-gray-400 leading-relaxed">直接跟 ChatGPT 聊？很容易陷入无主题的闲聊，或者被 AI 的“幻觉”带偏，缺乏系统的教学结构。</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- What Section: The Experience -->
+    <section class="py-32 px-6 relative overflow-hidden">
+        <!-- Background Elements -->
+        <div class="absolute top-1/2 right-0 w-[800px] h-[800px] bg-blue-600/10 rounded-full blur-[100px] -z-10"></div>
+
+        <div class="max-w-7xl mx-auto grid md:grid-cols-2 gap-20 items-center">
+
+            <!-- Left: Text -->
+            <div class="order-2 md:order-1">
+                <span class="text-blue-400 font-mono tracking-wider text-sm uppercase mb-4 block">The Experience</span>
+                <h2 class="text-4xl md:text-6xl font-bold mb-8 leading-tight">
+                    不仅是对话，<br>是一场<span class="highlight-text">深度研讨会</span>。
+                </h2>
+                <div class="space-y-8">
+                    <div class="flex gap-6">
+                        <div
+                            class="w-12 h-12 rounded-2xl bg-white/10 flex flex-col justify-center items-center font-bold text-xl">
+                            1</div>
+                        <div>
+                            <h4 class="text-xl font-bold text-white mb-2">泡泡入口 (The Bubble)</h4>
+                            <p class="text-gray-400">我们将知识封装成一个个“情境泡泡”。不是枯燥的概念，而是“周末加班值不值？”这样的人生难题。一触即达。</p>
+                        </div>
+                    </div>
+                    <div class="flex gap-6">
+                        <div
+                            class="w-12 h-12 rounded-2xl bg-white/10 flex flex-col justify-center items-center font-bold text-xl">
+                            2</div>
+                        <div>
+                            <h4 class="text-xl font-bold text-white mb-2">多角色演播室 (Multi-Role Studio)</h4>
+                            <p class="text-gray-400">
+                                你不是在和机器人单聊。这是一个由<b>主持人</b>(Host)、<b>专家</b>(Expert)、<b>挑战者</b>(Challenger)
+                                组成的虚拟演播室。而你是<b>特邀嘉宾</b>。</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Image -->
+            <div class="order-1 md:order-2 relative floating">
+                <div class="glass-panel p-2 rounded-[40px]">
+                    <img src="assests/inner_world.png" alt="Bubble Inner World Interface"
+                        class="rounded-[32px] w-full shadow-2xl border border-white/10">
+                </div>
+                <div
+                    class="absolute -bottom-10 -left-10 glass-card p-6 rounded-2xl animate__animated animate__fadeInUp delay-1">
+                    <p class="font-mono text-xs text-gray-400 mb-1">CURRENT SPEAKER</p>
+                    <div class="flex items-center gap-3">
+                        <div class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                        <span class="font-bold">AI Master (Host)</span>
+                    </div>
+                </div>
+                <div
+                    class="absolute -top-10 -right-5 glass-card p-6 rounded-2xl animate__animated animate__fadeInDown delay-2">
+                    <p class="font-mono text-xs text-gray-400 mb-1">USER ROLE</p>
+                    <div class="flex items-center gap-3">
+                        <span class="font-bold text-blue-300">Specail Guest (You)</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How Section: The Dual-Engine Director -->
+    <section class="py-32 px-6">
+        <div class="max-w-7xl mx-auto">
+            <div class="text-center mb-20">
+                <span class="text-purple-400 font-mono tracking-wider text-sm uppercase mb-4 block">Core
+                    Innovation</span>
+                <h2 class="text-5xl md:text-7xl font-black mb-6">双引擎导演系统</h2>
+                <h3 class="text-2xl text-gray-400 font-light">Dual-Engine Director System</h3>
+            </div>
+
+            <div class="grid lg:grid-cols-2 gap-12">
+                <!-- Macro Director -->
+                <div
+                    class="glass-panel rounded-[40px] p-12 relative overflow-hidden group hover:bg-white/5 transition duration-500">
+                    <div class="absolute top-0 right-0 p-8 opacity-20 text-9xl font-black text-blue-500 select-none">01
+                    </div>
+                    <h3 class="text-3xl font-bold mb-2 text-blue-400">宏观导演</h3>
+                    <h4 class="text-xl text-gray-400 mb-8 font-mono">Showrunner / Segment Director</h4>
+
+                    <p class="text-lg text-gray-300 mb-8 leading-relaxed">
+                        负责<b>“叙事结构”</b>与<b>“场面调度”</b>。它像一位金牌导播，确保对话流畅、有趣且不跑题。
+                    </p>
+
+                    <div class="bg-black/30 rounded-2xl p-6 border border-white/5">
+                        <p class="font-bold text-sm text-gray-400 mb-4 uppercase tracking-widest">Script Alignment 机制
+                        </p>
+                        <div class="flex flex-col gap-4">
+                            <div class="flex items-center gap-4 text-sm text-red-400">
+                                <span>⛔️ 用户跑题</span>
+                                <span class="flex-1 h-px bg-white/10"></span>
+                            </div>
+                            <div class="p-3 bg-blue-500/20 text-blue-300 rounded-lg text-sm border border-blue-500/30">
+                                ⚡️ Director Action: <b>RESCUE & REWRITE</b>
+                                <br><span class="text-xs opacity-70">"修改后续剧本，顺着用户的话题自然引导回主线..."</span>
+                            </div>
+                            <div class="flex items-center gap-4 text-sm text-green-400">
+                                <span>✅ 故事继续</span>
+                                <span class="flex-1 h-px bg-white/10"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Micro Director -->
+                <div
+                    class="glass-panel rounded-[40px] p-12 relative overflow-hidden group hover:bg-white/5 transition duration-500">
+                    <div class="absolute top-0 right-0 p-8 opacity-20 text-9xl font-black text-purple-500 select-none">
+                        02</div>
+                    <h3 class="text-3xl font-bold mb-2 text-purple-400">微观导演</h3>
+                    <h4 class="text-xl text-gray-400 mb-8 font-mono">Cognitive Coach / Beat Director</h4>
+
+                    <p class="text-lg text-gray-300 mb-8 leading-relaxed">
+                        负责<b>“教学效果”</b>。实时监控你的认知负荷 (Load) 和掌握度 (Mastery)，动态调整对话难度。
+                    </p>
+
+                    <div class="space-y-4">
+                        <!-- State 1 -->
+                        <div class="flex items-center p-4 rounded-xl bg-white/5 border border-white/5">
+                            <div
+                                class="w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center text-xl mr-4">
+                                🌫️</div>
+                            <div class="flex-1">
+                                <div class="flex justify-between mb-1">
+                                    <span class="font-bold text-gray-300">Fog State (迷茫)</span>
+                                    <span class="text-xs font-mono text-gray-500">High Load</span>
+                                </div>
+                                <div class="h-1 bg-gray-700 rounded-full w-full overflow-hidden">
+                                    <div class="h-full bg-red-500 w-3/4"></div>
+                                </div>
+                                <p class="text-xs text-gray-400 mt-2">→ 触发策略: <span class="text-white font-bold">生活比喻
+                                        (Reveal)</span></p>
+                            </div>
+                        </div>
+
+                        <!-- State 2 -->
+                        <div class="flex items-center p-4 rounded-xl bg-white/5 border border-white/5">
+                            <div
+                                class="w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center text-xl mr-4">
+                                😏</div>
+                            <div class="flex-1">
+                                <div class="flex justify-between mb-1">
+                                    <span class="font-bold text-gray-300">Illusion State (假懂)</span>
+                                    <span class="text-xs font-mono text-gray-500">Low Mastery</span>
+                                </div>
+                                <div class="h-1 bg-gray-700 rounded-full w-full overflow-hidden">
+                                    <div class="h-full bg-yellow-500 w-1/2"></div>
+                                </div>
+                                <p class="text-xs text-gray-400 mt-2">→ 触发策略: <span class="text-white font-bold">反直觉案例
+                                        (Twist)</span></p>
+                            </div>
+                        </div>
+
+                        <!-- State 3 -->
+                        <div
+                            class="flex items-center p-4 rounded-xl bg-gradient-to-r from-green-900/40 to-transparent border border-green-500/20">
+                            <div
+                                class="w-12 h-12 rounded-full bg-green-900/50 flex items-center justify-center text-xl mr-4">
+                                💡</div>
+                            <div class="flex-1">
+                                <div class="flex justify-between mb-1">
+                                    <span class="font-bold text-green-300">Aha State (顿悟)</span>
+                                    <span class="text-xs font-mono text-green-500">Mastery Achieved</span>
+                                </div>
+                                <div class="h-1 bg-gray-700 rounded-full w-full overflow-hidden">
+                                    <div class="h-full bg-green-500 w-full"></div>
+                                </div>
+                                <p class="text-xs text-gray-400 mt-2">→ 触发策略: <span class="text-white font-bold">费曼技巧
+                                        (Feynman)</span></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Architecture Section: Data Flow -->
+    <section class="py-24 bg-black/40 border-t border-white/5">
+        <div class="max-w-6xl mx-auto px-6 text-center">
+            <h2 class="text-3xl font-bold mb-16 text-gray-200">System Architecture: Data Flow</h2>
+
+            <div class="flex flex-wrap justify-center items-center gap-4 text-sm md:text-base">
+                <!-- Node -->
+                <div class="glass-card px-6 py-4 rounded-xl text-blue-300 border-blue-500/30">User Audio</div>
+                <!-- Arrow -->
+                <div class="font-mono text-gray-600">→</div>
+                <!-- Node -->
+                <div class="glass-card px-6 py-4 rounded-xl text-gray-300">ASR (Transcribe)</div>
+                <!-- Arrow -->
+                <div class="font-mono text-gray-600">→</div>
+                <!-- Node (Main) -->
+                <div
+                    class="glass-card px-8 py-6 rounded-2xl bg-blue-900/20 border-blue-400/50 shadow-[0_0_30px_rgba(59,130,246,0.15)] transform scale-110 z-10">
+                    <div class="text-xs text-blue-400 uppercase tracking-widest mb-1">Core Brain</div>
+                    <div class="font-bold text-xl text-white">Director System</div>
+                </div>
+                <!-- Arrow -->
+                <div class="font-mono text-gray-600">→</div>
+                <!-- Node -->
+                <div class="glass-card px-6 py-4 rounded-xl text-purple-300 border-purple-500/30">
+                    Director Plan
+                    <span class="block text-[10px] text-gray-500 font-mono mt-1">{JSON}</span>
+                </div>
+                <!-- Arrow -->
+                <div class="font-mono text-gray-600">→</div>
+                <!-- Node -->
+                <div class="glass-card px-6 py-4 rounded-xl text-gray-300">Actor Engine</div>
+                <!-- Arrow -->
+                <div class="font-mono text-gray-600">→</div>
+                <!-- Node -->
+                <div class="glass-card px-6 py-4 rounded-xl text-green-300 border-green-500/30">TTS & Audio</div>
+            </div>
+
+            <p class="mt-12 text-gray-500 text-sm max-w-2xl mx-auto">
+                <span class="font-bold text-gray-400">分离式架构：</span>决策 (Director) 与 表达 (Actor)
+                解耦，确保了教学目标的严谨性与对话表演的自然性的完美统一。
+            </p>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="py-24 text-center relative overflow-hidden">
+        <div class="absolute inset-0 bg-gradient-to-t from-blue-900/20 to-transparent pointer-events-none"></div>
+        <h2 class="text-3xl md:text-5xl font-bold mb-12">
+            让知识的传递，<br>成为一场精彩纷呈的<span
+                class="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400">“智力共舞”</span>。
+        </h2>
+        <div class="inline-flex flex-col md:flex-row gap-6">
+            <button class="px-10 py-4 bg-white text-black font-bold rounded-full hover:bg-gray-200 transition">立即体验
+                Demo</button>
+            <button
+                class="px-10 py-4 glass-card text-white font-bold rounded-full hover:bg-white/10 transition">阅读技术白皮书</button>
+        </div>
+        <div class="mt-24 text-gray-600 text-sm">
+            © 2024 BubbleTalk Project. All Rights Reserved.
+        </div>
+    </footer>
+
+</body>
+
+</html>
