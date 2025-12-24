@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"strconv"
 	"sync"
 	"time"
 )
@@ -58,12 +59,8 @@ func (r *ResponseMetadataRegistry) Register(responseID, role string, metadata ma
 	if beat, ok := metadata["beat"].(string); ok {
 		rm.Beat = beat
 	}
-	if seq, ok := metadata["sequence"].(int); ok {
-		rm.Sequence = seq
-	}
-	if total, ok := metadata["total"].(int); ok {
-		rm.Total = total
-	}
+	rm.Sequence = readIntMetadata(metadata, "sequence")
+	rm.Total = readIntMetadata(metadata, "total")
 
 	r.registry[responseID] = rm
 	r.roleIndex[role] = responseID
@@ -71,6 +68,32 @@ func (r *ResponseMetadataRegistry) Register(responseID, role string, metadata ma
 	if r.logger != nil {
 		r.logger.Printf("[ResponseMetadataRegistry] Registered: responseID=%s role=%s beat=%s seq=%d/%d",
 			responseID, role, rm.Beat, rm.Sequence, rm.Total)
+	}
+}
+
+// readIntMetadata 从元数据中读取整数值，支持多种类型转换
+func readIntMetadata(metadata map[string]interface{}, key string) int {
+	if metadata == nil {
+		return 0
+	}
+	switch v := metadata[key].(type) {
+	case int:
+		return v
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case float64:
+		// JSON 反序列化默认走 float64
+		return int(v)
+	case string:
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0
+		}
+		return n
+	default:
+		return 0
 	}
 }
 

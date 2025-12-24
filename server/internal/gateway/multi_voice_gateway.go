@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -32,6 +33,10 @@ type MultiVoiceGateway struct {
 
 	// 音色池（管理多个角色连接）：封装了与 OpenAI Realtime API 的多个连接
 	voicePool *VoicePool
+	// voicePoolReady 用于在 Start 完成 voicePool 初始化后唤醒发言队列。
+	// 注意：SendInstructions 可能在 Start 之前被调用（比如开场编排更早到达）。
+	voicePoolReady chan struct{}
+	voicePoolOnce  sync.Once
 
 	// 事件处理器（由 Orchestrator 注入）：用于将网关收到的业务事件（如用户说话、插话、退出等）转发给编排器
 	eventHandler EventHandler
@@ -50,6 +55,16 @@ type MultiVoiceGateway struct {
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	closeChan chan struct{}
+
+	// 发言调度：解决“主持人/经济学家同时说话（音频交错）”的问题。
+	// 设计原则：
+	// - SendInstructions 只入队，不阻塞 Orchestrator 的事件处理（避免 EventQueue 堆积）。
+	// - 任意时刻只允许一个角色 CreateResponse；下一个角色必须等上一个 response.done/cancelled。
+	speechMu       sync.Mutex
+	speechCond     *sync.Cond
+	speechQueue    []speechRequest
+	speechEndedCh  chan speechEnded
+	speechLoopOnce sync.Once
 
 	// ASR 事件源配置：解决"双终态事件源"问题
 	// true: 只使用 conversation.item.input_audio_transcription.completed
@@ -78,6 +93,20 @@ type MultiVoiceGateway struct {
 	logger *log.Logger
 }
 
+type speechRequest struct {
+	role         string
+	instructions string
+	metadata     map[string]interface{}
+	enqueuedAt   time.Time
+}
+
+type speechEnded struct {
+	role       string
+	responseID string
+	cancelled  bool
+	endedAt    time.Time
+}
+
 // NewMultiVoiceGateway 创建一个支持多音色的网关
 func NewMultiVoiceGateway(sessionID string, clientConn *websocket.Conn, config GatewayConfig) *MultiVoiceGateway {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -95,7 +124,11 @@ func NewMultiVoiceGateway(sessionID string, clientConn *websocket.Conn, config G
 		useTranscriptionCompleted: true,
 		// 初始化元数据注册表
 		metadataRegistry: NewResponseMetadataRegistry(logger),
+		voicePoolReady:   make(chan struct{}),
+		speechQueue:      make([]speechRequest, 0, 8),
+		speechEndedCh:    make(chan speechEnded, 32),
 	}
+	g.speechCond = sync.NewCond(&g.speechMu)
 
 	return g
 }
@@ -160,12 +193,14 @@ func (g *MultiVoiceGateway) Start(ctx context.Context) error {
 		return fmt.Errorf("initialize voice pool: %w", err)
 	}
 	g.logger.Printf("[MultiVoiceGateway] ✅ Voice pool initialized")
+	g.voicePoolOnce.Do(func() { close(g.voicePoolReady) })
 
 	// 3. 启动事件循环
 	g.logger.Printf("[MultiVoiceGateway] Starting event loops...")
 	go g.clientReadLoop()
 	go g.asrReadLoop()
 	go g.roleConnsReadLoop()
+	g.speechLoopOnce.Do(func() { go g.speechLoop() })
 
 	g.logger.Printf("[MultiVoiceGateway] ✅ Gateway fully started for session %s", g.sessionID)
 	return nil
@@ -248,6 +283,9 @@ func (g *MultiVoiceGateway) handleClientAudio(audioData []byte) error {
 // handleBargeIn 处理插话中断
 func (g *MultiVoiceGateway) handleBargeIn(msg *ClientMessage) error {
 	g.logger.Printf("[MultiVoiceGateway] barge-in detected, canceling active response")
+
+	// 插话意味着用户要接管话筒：把所有“待播报”的旧指令都丢掉，避免过期内容插播。
+	g.dropPendingSpeech("client_barge_in")
 
 	// 取消当前正在说话的角色的响应
 	if err := g.voicePool.CancelCurrentResponse(); err != nil {
@@ -358,12 +396,28 @@ func (g *MultiVoiceGateway) handleASREvent(data []byte) error {
 		// 修复方案：服务端兜底的插话检测
 		g.logger.Printf("[MultiVoiceGateway] 🎤 User started speaking (server-side VAD)")
 
+		activeSpeaker := ""
+		if g.voicePool != nil {
+			activeSpeaker = g.voicePool.GetSpeakingRole()
+		}
+
+		// 用户开口时：丢弃尚未播放的旧指令，避免“还没说完就又发现要说另一段”的精神分裂感。
+		g.dropPendingSpeech("server_vad_speech_started")
+
 		// 服务端兜底：如果有角色正在说话，立即取消
 		// 这是对客户端 barge_in 的补充，防止客户端延迟或未发送 barge_in
 		if err := g.voicePool.CancelCurrentResponse(); err != nil {
 			g.logger.Printf("[MultiVoiceGateway] ⚠️  Server-side barge-in cancel failed: %v", err)
 		} else {
 			g.logger.Printf("[MultiVoiceGateway] ✅ Server-side barge-in: cancelled current response")
+		}
+
+		// 仅在确实有 AI 在播时才清空缓冲，避免前端收到噪音事件。
+		if activeSpeaker != "" {
+			g.sendToClient(&ServerMessage{
+				Type:     EventTypeTTSInterrupted,
+				ServerTS: time.Now(),
+			})
 		}
 
 		return nil
@@ -657,6 +711,13 @@ func (g *MultiVoiceGateway) handleRoleConnEvent(role string, data []byte) error 
 		// 4. 通知前端 TTS 已中断
 		g.sendTTSCompletedToClient(role)
 
+		g.notifySpeechEnded(speechEnded{
+			role:       role,
+			responseID: responseID,
+			cancelled:  true,
+			endedAt:    time.Now(),
+		})
+
 		return nil
 	}
 
@@ -778,6 +839,9 @@ func (g *MultiVoiceGateway) handleResponseDone(role string, event map[string]int
 	response, _ := event["response"].(map[string]interface{})
 	responseID, _ := response["id"].(string)
 
+	// 必须在 unregister 之前拍快照，否则 assistant_text 会丢失 beat/sequence 等上下文。
+	metadata := g.snapshotActiveMetadata(role)
+
 	// 清除活跃响应
 	conn, _ := g.voicePool.GetRoleConn(g.ctx, role)
 	if conn != nil {
@@ -824,7 +888,6 @@ func (g *MultiVoiceGateway) handleResponseDone(role string, event map[string]int
 		}
 
 		// 将最终文本发给前端（用于 UI 气泡/字幕）并回灌给 Orchestrator（用于 SessionState 归约，支撑角色轮转）。
-		metadata := g.snapshotActiveMetadata(role)
 		_ = g.sendToClient(&ServerMessage{
 			Type:     EventTypeAssistantText,
 			Text:     finalText,
@@ -840,6 +903,13 @@ func (g *MultiVoiceGateway) handleResponseDone(role string, event map[string]int
 			ClientTS: time.Now(),
 		})
 	}
+
+	g.notifySpeechEnded(speechEnded{
+		role:       role,
+		responseID: responseID,
+		cancelled:  false,
+		endedAt:    time.Now(),
+	})
 
 	return nil
 }
@@ -871,21 +941,24 @@ func (g *MultiVoiceGateway) SendInstructions(ctx context.Context, instructions s
 		g.logger.Printf("[MultiVoiceGateway] ❌ role not specified in metadata: %+v", metadata)
 		return fmt.Errorf("role not specified in metadata")
 	}
+	if _, exists := g.config.RoleProfiles[role]; !exists {
+		return fmt.Errorf("unknown role: %s", role)
+	}
 
-	g.logger.Printf("[MultiVoiceGateway] Sending instructions to role %s (len=%d)", role, len(instructions))
+	g.logger.Printf("[MultiVoiceGateway] Enqueue instructions to role %s (len=%d)", role, len(instructions))
 	g.logger.Printf("[MultiVoiceGateway] Metadata: %+v", metadata)
 
-	// 保存活跃元数据
-	g.activeMetadataLock.Lock()
-	g.activeMetadata = metadata
-	g.activeMetadataLock.Unlock()
+	// 入队发言请求
+	// 说明：这里不直接调用 CreateResponse，而是入队等待 speechLoop 处理，
+	// 以保证任意时刻只有一个角色在说话，避免音频交错。
+	// 同时也避免阻塞 Orchestrator 的事件处理。
+	// 注意：这里对 metadata 做浅拷贝，防止后续外部修改影响队列中的数据。
+	g.enqueueSpeech(role, instructions, metadata)
+	g.speechLoopOnce.Do(func() { go g.speechLoop() })
 
-	// 在指定角色的连接上创建响应
-	err := g.voicePool.CreateResponse(ctx, role, instructions, metadata)
-	if err != nil {
-		g.logger.Printf("[MultiVoiceGateway] ❌ Failed to create response for role %s: %v", role, err)
-	}
-	return err
+	// 重要：这里不阻塞 Orchestrator（否则 EventQueue 会堆积，导致用户转写/插话延迟变大）。
+	_ = ctx
+	return nil
 }
 
 // sendToClient 发送消息给客户端
@@ -967,6 +1040,11 @@ func (g *MultiVoiceGateway) Close() error {
 		g.cancel()
 		close(g.closeChan)
 
+		// 唤醒 speechLoop，避免 cond.Wait 造成 goroutine 泄露。
+		g.speechMu.Lock()
+		g.speechCond.Broadcast()
+		g.speechMu.Unlock()
+
 		// 关闭事件队列（等待所有待处理事件完成）
 		if g.eventQueue != nil {
 			stats := g.eventQueue.GetStats()
@@ -1001,4 +1079,201 @@ func (g *MultiVoiceGateway) Close() error {
 // Done 返回一个在连接关闭时关闭的 channel
 func (g *MultiVoiceGateway) Done() <-chan struct{} {
 	return g.closeChan
+}
+
+// enqueueSpeech 将一次“发言请求”封装并放入内部的发言队列（非阻塞）。
+// 目的与设计说明：
+//  1. 不直接触发网络或模型请求（CreateResponse），而是仅把指令入队。
+//     这是为了保持 Orchestrator 的事件处理（SendInstructions 调用）迅速返回，
+//     防止事件队列（EventQueue）被阻塞或堆积，尤其在模型拨号/初始化慢时。
+//  2. 使用独立的 speechLoop 来串行触发实际的 CreateResponse，保证任意
+//     时刻最多只有一个角色在合成/播放音频（避免音频交错）。
+//  3. 在入队时对 metadata 做浅拷贝（cloneMetadata），避免后续外部修改影响队列中的数据。
+//  4. 通过 cond.Signal 唤醒等待的 speechLoop，以便尽快处理新入队的发言请求。
+func (g *MultiVoiceGateway) enqueueSpeech(role string, instructions string, metadata map[string]interface{}) {
+	req := speechRequest{
+		role:         role,
+		instructions: instructions,
+		metadata:     cloneMetadata(metadata),
+		enqueuedAt:   time.Now(),
+	}
+
+	g.speechMu.Lock()
+	g.speechQueue = append(g.speechQueue, req)
+	queueSize := len(g.speechQueue)
+	g.speechMu.Unlock()
+
+	g.logger.Printf("[MultiVoiceGateway] 🎙️ Speech enqueued: role=%s queue_size=%d", role, queueSize)
+	// 唤醒可能正在等待队列的 speechLoop
+	g.speechCond.Signal()
+}
+
+// dropPendingSpeech 丢弃所有尚未被 speechLoop 处理的发言请求。
+// 目的与设计说明：
+//   - 在发生插话（barge-in）、ASR 用户开口或其它需要立即中断后续播报的场景时，
+//     我们希望清除过期或不再适用的待播指令，避免旧的、与当前会话状态不一致的文本被播报。
+//   - 此操作只影响“队列中还没开始执行”的请求，不会直接取消已经开始的 response；
+//     已开始的 response 由 voicePool.CancelCurrentResponse 来取消。
+//   - 使用此函数时通常会伴随一次 CancelCurrentResponse 或其他控制动作，以收敛系统状态。
+func (g *MultiVoiceGateway) dropPendingSpeech(reason string) {
+	g.speechMu.Lock()
+	dropped := len(g.speechQueue)
+	// 清空切片但保留底层容量，避免频繁的内存分配。
+	g.speechQueue = g.speechQueue[:0]
+	g.speechMu.Unlock()
+
+	if dropped > 0 {
+		g.logger.Printf("[MultiVoiceGateway] 🧹 Dropped pending speech: dropped=%d reason=%s", dropped, reason)
+	}
+}
+
+// notifySpeechEnded 向内部的 speechEndedCh 发送发言结束事件，用于唤醒正在等待的 speechLoop 或其他等待者。
+// 设计说明：
+//   - speechEndedCh 是一个带缓冲的 channel（容量有限），用于在 response.done / response.cancelled
+//     等事件到来时通知队列推进。这里使用非阻塞发送（select default）以避免在极端情况下
+//     阻塞事件处理 goroutine（例如当没人消费时）。
+//   - 丢弃通知不会影响系统正确性：如果通知被丢弃，speechLoop 会在超时后通过超时机制推进。
+//   - 这种设计权衡了可靠性（尽量传递事件）与可用性（不因未消费通知阻塞关键路径）。
+func (g *MultiVoiceGateway) notifySpeechEnded(ev speechEnded) {
+	select {
+	case g.speechEndedCh <- ev:
+	default:
+		// 仅用于驱动队列推进，丢弃不会影响系统正确性（最坏情况：由超时兜底推进）。
+	}
+}
+
+// speechLoop 是一个独立的协程，负责从发言队列中取出请求并依次执行。
+// 设计要点：
+// - 保证任意时刻只有一个角色在说话，避免音频交错。
+// - 使用条件变量与互斥锁配合，避免忙等待并能在新请求到来时迅速唤醒。
+// - 在执行 CreateResponse 前后处理并发说话的防御逻辑，确保系统状态收敛。
+func (g *MultiVoiceGateway) speechLoop() {
+	// 等待 voicePool 就绪（Start 之后）。
+	select {
+	case <-g.voicePoolReady:
+	case <-g.closeChan:
+		return
+	}
+
+	const maxWaitSpeechEnd = 6 * time.Minute
+
+	for {
+		// 从发言队列中取出下一个请求（阻塞直到有请求或网关关闭）。
+		req, ok := g.nextSpeechRequest()
+		if !ok {
+			return
+		}
+
+		// 防御：如果外部路径意外触发了并发说话，这里先等上一段结束/或超时取消。
+		if g.voicePool != nil && g.voicePool.GetSpeakingRole() != "" {
+			g.logger.Printf("[MultiVoiceGateway] ⚠️  Speech loop found active speaker, waiting... active_role=%s",
+				g.voicePool.GetSpeakingRole())
+			_ = g.waitAnySpeechEnded(maxWaitSpeechEnd)
+		}
+
+		// roleConn 可能是按需创建的，首次创建会经历拨号/握手/初始化。
+		// 这里的超时要覆盖 roleConnCreateTimeout，避免“队列一直重试但永远起不来”的抖动。
+		reqCtx, cancel := context.WithTimeout(g.ctx, roleConnCreateTimeout+15*time.Second)
+		err := g.voicePool.CreateResponse(reqCtx, req.role, req.instructions, req.metadata)
+		cancel()
+		if err != nil {
+			// 如果是“有人在说话”，把它重新塞回队列尾部；否则丢弃并继续。
+			if errors.Is(err, ErrRoleAlreadySpeaking) {
+				g.logger.Printf("[MultiVoiceGateway] ⚠️  Speech blocked by active speaker, requeue: role=%s err=%v", req.role, err)
+				g.enqueueSpeech(req.role, req.instructions, req.metadata)
+				_ = g.waitAnySpeechEnded(maxWaitSpeechEnd)
+				continue
+			}
+
+			g.logger.Printf("[MultiVoiceGateway] ❌ Failed to start speech: role=%s err=%v", req.role, err)
+			continue
+		}
+
+		// 等待本次播报结束（done/cancelled）。
+		timer := time.NewTimer(maxWaitSpeechEnd)
+		for {
+			select {
+			case <-g.closeChan:
+				timer.Stop()
+				return
+
+			case ev := <-g.speechEndedCh:
+				// 理论上只有一个 speaker；如果出现不一致，记录后仍推进，避免队列卡死。
+				if ev.role != "" && ev.role != req.role {
+					g.logger.Printf("[MultiVoiceGateway] ⚠️  Unexpected speech ended: got_role=%s want_role=%s resp=%s cancelled=%v",
+						ev.role, req.role, ev.responseID, ev.cancelled)
+				}
+
+				timer.Stop()
+				goto next
+
+			case <-timer.C:
+				// 兜底：避免 roleConn 异常导致队列永久卡死。
+				g.logger.Printf("[MultiVoiceGateway] ⏱️ Speech end timeout, force cancel: role=%s", req.role)
+				_ = g.voicePool.CancelCurrentResponse()
+				goto next
+			}
+		}
+	next:
+		continue
+	}
+}
+
+// nextSpeechRequest 从发言队列中取出下一个请求（阻塞直到有请求或网关关闭）。
+// 设计要点：
+// - 使用 g.speechCond 条件变量与 g.speechMu 互斥锁配合，避免忙等待并能在新请求到来时迅速唤醒。
+// - 返回值第二个布尔位表示成功取到请求（true）或因网关关闭而退出（false）。
+// - 从队列头移除元素时采用两步：先 copy 前移，再缩短切片长度，以避免内存泄露或保留已用元素的引用。
+func (g *MultiVoiceGateway) nextSpeechRequest() (speechRequest, bool) {
+	g.speechMu.Lock()
+	defer g.speechMu.Unlock()
+
+	for len(g.speechQueue) == 0 {
+		// 等待直到有新的发言被入队或网关关闭
+		g.speechCond.Wait()
+		select {
+		case <-g.closeChan:
+			return speechRequest{}, false
+		default:
+		}
+	}
+
+	// 取出队首元素并将切片前移
+	req := g.speechQueue[0]
+	copy(g.speechQueue, g.speechQueue[1:])
+	g.speechQueue = g.speechQueue[:len(g.speechQueue)-1]
+	return req, true
+}
+
+// waitAnySpeechEnded 等待任意一次发言结束事件或超时。
+// 设计要点：
+// - 该函数通常用于在尝试发起新发言前，确保上一个发言已经结束，避免并发发言。
+// - 使用带超时的 timer 作为兜底，防止因事件未到达导致永久阻塞（例如 roleConn 崩溃）。
+// - 如果网关正在关闭（g.closeChan 关闭），优先返回 context.Canceled，以便调用方及时中止。
+func (g *MultiVoiceGateway) waitAnySpeechEnded(timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-g.closeChan:
+		return context.Canceled
+	case <-timer.C:
+		return context.DeadlineExceeded
+	case <-g.speechEndedCh:
+		return nil
+	}
+}
+
+// cloneMetadata 浅拷贝 metadata，以防止外部持有的 map 在入队后被修改，造成不可预测的行为。
+// 我们不做深拷贝，因为 metadata 的值通常是简单类型或已知的小结构；若将来需要深拷贝，
+// 可以在此处扩展。
+func cloneMetadata(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }

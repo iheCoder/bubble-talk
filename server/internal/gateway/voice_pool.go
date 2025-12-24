@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -48,6 +49,8 @@ type VoicePool struct {
 }
 
 const roleConnCreateTimeout = 45 * time.Second // 增加到 45 秒，允许 3 次重试
+
+var ErrRoleAlreadySpeaking = errors.New("voice pool: another response is already in progress")
 
 func (vp *VoicePool) logf(format string, args ...any) {
 	if vp.logger != nil {
@@ -380,9 +383,19 @@ func (vp *VoicePool) SyncAssistantText(text string, fromRole string) error {
 func (vp *VoicePool) CreateResponse(ctx context.Context, role string, instructions string, metadata map[string]interface{}) error {
 	vp.logf("[VoicePool:%s] Creating response for role %s", vp.sessionID, role)
 
+	// 获取角色连接
 	conn, err := vp.GetRoleConn(ctx, role)
 	if err != nil {
 		return fmt.Errorf("get role conn: %w", err)
+	}
+
+	// 重要不变量：任意时刻只允许一个角色在说话。
+	// 否则会出现多路音频交错，前端无法区分来源，用户体验会变成“抢话/混音”。
+	vp.speakingRoleMu.RLock()
+	current := vp.speakingRole
+	vp.speakingRoleMu.RUnlock()
+	if current != "" {
+		return fmt.Errorf("%w: current=%s requested=%s", ErrRoleAlreadySpeaking, current, role)
 	}
 
 	vp.speakingRoleMu.Lock()
@@ -392,7 +405,14 @@ func (vp *VoicePool) CreateResponse(ctx context.Context, role string, instructio
 	// 保存 metadata 到连接，以便 response.created 时可以使用
 	conn.SetPendingMetadata(metadata)
 
-	return conn.CreateResponse(instructions, metadata)
+	// 创建响应
+	if err = conn.CreateResponse(instructions, metadata); err != nil {
+		// 注意：CreateResponse 失败时不能让 speakingRole 卡死，否则后续 cancel/排队都会异常。
+		vp.ClearSpeakingRole()
+		return err
+	}
+
+	return nil
 }
 
 // CancelCurrentResponse 取消当前正在说话的角色的响应
@@ -421,6 +441,13 @@ func (vp *VoicePool) ClearSpeakingRole() {
 	vp.speakingRoleMu.Lock()
 	vp.speakingRole = ""
 	vp.speakingRoleMu.Unlock()
+}
+
+// GetSpeakingRole 获取当前正在说话的角色
+func (vp *VoicePool) GetSpeakingRole() string {
+	vp.speakingRoleMu.RLock()
+	defer vp.speakingRoleMu.RUnlock()
+	return vp.speakingRole
 }
 
 // GetConversationHistory 获取对话历史
